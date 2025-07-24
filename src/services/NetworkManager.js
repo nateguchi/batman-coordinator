@@ -27,6 +27,38 @@ class NetworkManager {
         }
     }
 
+    async waitForMeshInterface() {
+        logger.info(`Waiting for mesh interface ${this.meshInterface} to be ready...`);
+        
+        for (let i = 0; i < 30; i++) {
+            try {
+                // Check if interface exists and is up
+                const output = await this.executeCommand(`ip link show ${this.meshInterface}`);
+                if (output.includes('state UP')) {
+                    // For wireless interfaces, also check if we're connected to ad-hoc network
+                    try {
+                        const iwOutput = await this.executeCommand(`iw ${this.meshInterface} info`);
+                        if (iwOutput.includes('type IBSS')) {
+                            logger.info(`Mesh interface ${this.meshInterface} is ready`);
+                            return;
+                        }
+                    } catch (error) {
+                        // Not a wireless interface or iw command failed
+                        logger.info(`Mesh interface ${this.meshInterface} is ready (non-wireless)`);
+                        return;
+                    }
+                }
+            } catch (error) {
+                // Interface not ready yet
+            }
+            
+            logger.debug(`Waiting for mesh interface... attempt ${i + 1}/30`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        throw new Error(`Mesh interface ${this.meshInterface} not ready after 30 seconds`);
+    }
+
     async getBatmanVersion() {
         try {
             // Try different version commands
@@ -58,11 +90,31 @@ class NetworkManager {
             await this.executeCommand(`batctl meshif ${this.batmanInterface} interface del ${this.meshInterface} 2>/dev/null || true`);
             await this.executeCommand(`ip link delete ${this.batmanInterface} 2>/dev/null || true`);
             
+            // Verify the mesh interface is up and ready
+            await this.waitForMeshInterface();
+            
             // Add mesh interface to batman-adv (use new syntax)
             await this.executeCommand(`batctl meshif ${this.batmanInterface} interface add ${this.meshInterface}`);
             
             // Wait for batman interface to be created
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Verify batman interface was created
+            let batmanExists = false;
+            for (let i = 0; i < 10; i++) {
+                try {
+                    await this.executeCommand(`ip link show ${this.batmanInterface}`);
+                    batmanExists = true;
+                    break;
+                } catch (error) {
+                    logger.debug(`Waiting for batman interface... attempt ${i + 1}`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+            
+            if (!batmanExists) {
+                throw new Error(`Batman interface ${this.batmanInterface} was not created`);
+            }
             
             // Bring up batman interface
             await this.executeCommand(`ip link set up dev ${this.batmanInterface}`);

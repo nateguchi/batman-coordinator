@@ -178,6 +178,9 @@ class Coordinator {
             logger.warn('Coordinator should run as root for full network management capabilities');
         }
         
+        // Configure wireless interface for ad-hoc mode (required for batman-adv)
+        await this.configureWirelessInterface();
+        
         // Initialize batman-adv
         await this.networkManager.initializeBatman();
         
@@ -188,6 +191,128 @@ class Coordinator {
         await this.securityManager.setupFirewallRules();
         
         logger.info('Network infrastructure setup complete');
+    }
+
+    async configureWirelessInterface() {
+        const meshInterface = process.env.MESH_INTERFACE;
+        const ssid = process.env.MESH_SSID;
+        const frequency = process.env.MESH_FREQUENCY;
+        
+        logger.info(`Configuring coordinator ${meshInterface} for ad-hoc mode...`);
+        
+        try {
+            // Step 1: Completely unmanage the interface
+            await this.unmanageInterface(meshInterface);
+            
+            // Step 2: Configure for ad-hoc mode
+            // Set interface down
+            await this.networkManager.executeCommand(`ip link set ${meshInterface} down`);
+            
+            // Set to ad-hoc mode
+            await this.networkManager.executeCommand(`iw ${meshInterface} set type ibss`);
+            
+            // Bring interface up
+            await this.networkManager.executeCommand(`ip link set ${meshInterface} up`);
+            
+            // Join the ad-hoc network
+            await this.networkManager.executeCommand(`iw ${meshInterface} ibss join ${ssid} ${frequency}`);
+            
+            // Wait longer for the interface to stabilize and connect
+            logger.info('Waiting for coordinator ad-hoc network to stabilize...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            
+            // Verify we're connected to the ad-hoc network
+            try {
+                const iwOutput = await this.networkManager.executeCommand(`iw ${meshInterface} info`);
+                logger.debug(`Coordinator wireless interface status: ${iwOutput}`);
+                
+                if (!iwOutput.includes('type IBSS')) {
+                    throw new Error('Coordinator interface not in IBSS (ad-hoc) mode');
+                }
+            } catch (error) {
+                logger.warn('Could not verify coordinator wireless interface status:', error.message);
+            }
+            
+            logger.info(`Coordinator wireless interface ${meshInterface} configured for ad-hoc mode`);
+            
+        } catch (error) {
+            logger.error('Failed to configure coordinator wireless interface:', error);
+            throw error;
+        }
+    }
+
+    async unmanageInterface(interfaceName) {
+        logger.info(`Unmanaging coordinator interface ${interfaceName} from all network managers...`);
+        
+        try {
+            // First, disconnect from any existing networks on this specific interface
+            await this.networkManager.executeCommand(`iw ${interfaceName} disconnect 2>/dev/null || true`);
+            await this.networkManager.executeCommand(`iw ${interfaceName} ibss leave 2>/dev/null || true`);
+            
+            // Remove any existing IP addresses from this interface only
+            await this.networkManager.executeCommand(`ip addr flush dev ${interfaceName} 2>/dev/null || true`);
+            
+            // Stop interface-specific wpa_supplicant services (don't kill global ones)
+            try {
+                await this.networkManager.executeCommand(`systemctl disable wpa_supplicant@${interfaceName} 2>/dev/null || true`);
+                await this.networkManager.executeCommand(`systemctl stop wpa_supplicant@${interfaceName} 2>/dev/null || true`);
+            } catch (error) {
+                // Service doesn't exist
+            }
+            
+            // Check if wpa_supplicant is running with this interface and kill only that instance
+            try {
+                const psOutput = await this.networkManager.executeCommand(`ps aux | grep "wpa_supplicant.*${interfaceName}" | grep -v grep || true`);
+                if (psOutput.trim()) {
+                    const pid = psOutput.trim().split(/\s+/)[1];
+                    if (pid) {
+                        await this.networkManager.executeCommand(`kill ${pid} 2>/dev/null || true`);
+                        logger.debug(`Killed wpa_supplicant process for ${interfaceName} (PID: ${pid})`);
+                    }
+                }
+            } catch (error) {
+                // No specific wpa_supplicant process found
+            }
+            
+            // Create NetworkManager ignore rule for this specific interface only
+            try {
+                const nmConfPath = '/etc/NetworkManager/conf.d/99-ignore-mesh.conf';
+                const nmConfig = `[keyfile]\nunmanaged-devices=interface-name:${interfaceName}`;
+                await this.networkManager.executeCommand(`echo '${nmConfig}' > ${nmConfPath} 2>/dev/null || true`);
+                await this.networkManager.executeCommand('systemctl reload NetworkManager 2>/dev/null || true');
+                logger.debug(`NetworkManager configured to ignore ${interfaceName}`);
+            } catch (error) {
+                // NetworkManager not available or no permission
+            }
+            
+            // Remove systemd-networkd config for this interface only
+            try {
+                const networkdConfigPath = `/etc/systemd/network/10-${interfaceName}.network`;
+                await this.networkManager.executeCommand(`rm -f ${networkdConfigPath} 2>/dev/null || true`);
+                await this.networkManager.executeCommand('systemctl reload systemd-networkd 2>/dev/null || true');
+            } catch (error) {
+                // Not using systemd-networkd or no permission
+            }
+            
+            // Stop dhcpcd only for this interface (don't stop global dhcpcd)
+            try {
+                await this.networkManager.executeCommand(`dhcpcd -k ${interfaceName} 2>/dev/null || true`);
+                logger.debug(`Released DHCP lease for ${interfaceName}`);
+            } catch (error) {
+                // dhcpcd not running for this interface
+            }
+            
+            // Set interface down to ensure clean state
+            await this.networkManager.executeCommand(`ip link set ${interfaceName} down`);
+            
+            // Wait for interface to settle
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            logger.info(`Coordinator interface ${interfaceName} unmanaged successfully (other interfaces unaffected)`);
+            
+        } catch (error) {
+            logger.warn('Some coordinator unmanage operations failed (may be normal):', error.message);
+        }
     }
 
     setupMonitoring() {
