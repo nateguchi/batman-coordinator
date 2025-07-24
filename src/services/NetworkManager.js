@@ -106,16 +106,21 @@ class NetworkManager {
 
     async getBatmanNeighbors() {
         try {
-            // Try new command format first, fallback to old format
+            // Try new meshif command format first, fallback to old format
             let output;
             try {
-                output = await this.executeCommand('batctl neighbors');
+                output = await this.executeCommand(`batctl meshif ${this.batmanInterface} neighbors`);
             } catch (error) {
                 try {
-                    output = await this.executeCommand('batctl n');
+                    output = await this.executeCommand(`batctl meshif ${this.batmanInterface} n`);
                 } catch (error2) {
-                    // Try originators table as alternative
-                    output = await this.executeCommand('batctl originators');
+                    try {
+                        // Try old format without meshif
+                        output = await this.executeCommand('batctl neighbors');
+                    } catch (error3) {
+                        // Last resort - old single letter command
+                        output = await this.executeCommand('batctl n');
+                    }
                 }
             }
             
@@ -146,16 +151,22 @@ class NetworkManager {
 
     async getBatmanRoutes() {
         try {
-            // Try new command format first, fallback to old format
+            // Batman-adv doesn't have a "routes" table, use originators table instead
             let output;
             try {
-                output = await this.executeCommand('batctl routes');
+                // Try new meshif command format for originators
+                output = await this.executeCommand(`batctl meshif ${this.batmanInterface} originators`);
             } catch (error) {
                 try {
-                    output = await this.executeCommand('batctl r');
+                    output = await this.executeCommand(`batctl meshif ${this.batmanInterface} o`);
                 } catch (error2) {
-                    // Try old format as last resort
-                    output = await this.executeCommand('batctl rt');
+                    try {
+                        // Try old format without meshif
+                        output = await this.executeCommand('batctl originators');
+                    } catch (error3) {
+                        // Last resort - old single letter command
+                        output = await this.executeCommand('batctl o');
+                    }
                 }
             }
             
@@ -165,13 +176,13 @@ class NetworkManager {
             for (const line of lines) {
                 if (line.includes('(') && line.includes(')')) {
                     const parts = line.trim().split(/\s+/);
-                    if (parts.length >= 5) {
+                    if (parts.length >= 4) {
                         routes.push({
-                            destination: parts[0],
-                            nextHop: parts[1],
-                            lastSeen: parts[2],
-                            quality: parts[3],
-                            interface: parts[4]
+                            originator: parts[0],
+                            lastSeen: parts[1],
+                            quality: parts[2],
+                            nextHop: parts[3],
+                            interface: parts[4] || 'unknown'
                         });
                     }
                 }
