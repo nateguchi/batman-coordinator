@@ -148,17 +148,17 @@ class SecurityManager {
                 await this.executeCommand(`iptables -A OUTPUT -o ${this.batmanInterface} -j ACCEPT`);
                 await this.executeCommand(`iptables -A OUTPUT -o ${this.meshInterface} -j ACCEPT`);
                 
-                // SECURITY: Block ZeroTier from using ethernet - force through mesh
-                await this.executeCommand(`iptables -A OUTPUT -o ${this.ethernetInterface} -p udp --dport 9993 -j DROP`); // ZeroTier control port
-                await this.executeCommand(`iptables -A OUTPUT -o ${this.ethernetInterface} -p tcp --dport 9993 -j DROP`); // ZeroTier control port
-                await this.executeCommand(`iptables -A OUTPUT -o eth0 -p udp --dport 9993 -j DROP`);
-                await this.executeCommand(`iptables -A OUTPUT -o eth0 -p tcp --dport 9993 -j DROP`);
+                // // SECURITY: Block ZeroTier from using ethernet - force through mesh
+                // await this.executeCommand(`iptables -A OUTPUT -o ${this.ethernetInterface} -p udp --dport 9993 -j DROP`); // ZeroTier control port
+                // await this.executeCommand(`iptables -A OUTPUT -o ${this.ethernetInterface} -p tcp --dport 9993 -j DROP`); // ZeroTier control port
+                // await this.executeCommand(`iptables -A OUTPUT -o eth0 -p udp --dport 9993 -j DROP`);
+                // await this.executeCommand(`iptables -A OUTPUT -o eth0 -p tcp --dport 9993 -j DROP`);
                 
-                // Block forwarding from batman to ethernet (prevent unauthorized internet access)
-                await this.executeCommand(`iptables -A FORWARD -i ${this.batmanInterface} -o ${this.ethernetInterface} -j DROP`);
-                await this.executeCommand(`iptables -A FORWARD -i ${this.meshInterface} -o ${this.ethernetInterface} -j DROP`);
-                await this.executeCommand(`iptables -A FORWARD -i ${this.batmanInterface} -o eth0 -j DROP`);
-                await this.executeCommand(`iptables -A FORWARD -i ${this.meshInterface} -o eth0 -j DROP`);
+                // // Block forwarding from batman to ethernet (prevent unauthorized internet access)
+                // await this.executeCommand(`iptables -A FORWARD -i ${this.batmanInterface} -o ${this.ethernetInterface} -j DROP`);
+                // await this.executeCommand(`iptables -A FORWARD -i ${this.meshInterface} -o ${this.ethernetInterface} -j DROP`);
+                // await this.executeCommand(`iptables -A FORWARD -i ${this.batmanInterface} -o eth0 -j DROP`);
+                // await this.executeCommand(`iptables -A FORWARD -i ${this.meshInterface} -o eth0 -j DROP`);
             }
             
             await this.saveIptablesRules();
