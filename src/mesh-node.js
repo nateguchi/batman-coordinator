@@ -92,13 +92,10 @@ class MeshNode {
             // Initialize batman-adv
             await this.networkManager.initializeBatman();
             
-            // Get and log the assigned node IP
-            const nodeIP = await this.networkManager.getBatmanInterfaceIP();
-            if (nodeIP) {
-                logger.info(`Node assigned batman IP: ${nodeIP}`);
-            } else {
-                logger.warn('Could not determine node batman IP');
-            }
+            // Wait for IP assignment (DHCP for nodes)
+            logger.info('Waiting for IP assignment via DHCP...');
+            const nodeIP = await this.networkManager.waitForBatmanIP();
+            logger.info(`Node assigned batman IP: ${nodeIP}`);
             
             // Wait for batman mesh to stabilize
             logger.info('Waiting for batman mesh to stabilize...');

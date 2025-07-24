@@ -354,6 +354,46 @@ class NetworkManager {
         }
     }
 
+    async waitForBatmanIP(maxAttempts = 30) {
+        logger.info(`Waiting for IP assignment on ${this.batmanInterface}...`);
+        
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                const ip = await this.getBatmanInterfaceIP();
+                
+                if (ip && !ip.startsWith('169.254.')) {
+                    logger.info(`✅ Batman interface got IP: ${ip} (attempt ${attempt})`);
+                    return ip;
+                }
+                
+                logger.debug(`⏳ Waiting for batman IP... attempt ${attempt}/${maxAttempts}`);
+                await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+                
+            } catch (error) {
+                logger.debug(`Batman IP check failed on attempt ${attempt}:`, error.message);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+        
+        // If we get here, no IP was assigned
+        const errorMsg = `Failed to get IP on ${this.batmanInterface} after ${maxAttempts} attempts`;
+        logger.error(errorMsg);
+        
+        // Try to get diagnostic info
+        try {
+            const interfaceStatus = await this.executeCommand(`ip link show ${this.batmanInterface}`);
+            logger.debug('Batman interface status:', interfaceStatus);
+            
+            const dhclientStatus = await this.executeCommand(`ps aux | grep dhclient | grep ${this.batmanInterface} || echo "No dhclient process found"`);
+            logger.debug('DHCP client status:', dhclientStatus);
+            
+        } catch (debugError) {
+            logger.debug('Failed to get diagnostic info:', debugError.message);
+        }
+        
+        throw new Error(errorMsg);
+    }
+
     async getBatmanNeighbors() {
         try {
             // Try new meshif command format first, fallback to old format
