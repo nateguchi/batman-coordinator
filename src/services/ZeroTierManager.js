@@ -18,7 +18,12 @@ class ZeroTierManager {
             logger.debug(`Executing ZeroTier command: ${command}`);
             const { stdout, stderr } = await execAsync(command, { timeout: 30000, ...options });
             if (stderr && !options.ignoreStderr && !command.includes('2>/dev/null')) {
-                logger.warn(`ZeroTier command stderr: ${stderr}`);
+                // Ignore common expected stderr messages
+                if (!stderr.includes('not a dynamic executable') && 
+                    !stderr.includes('No such file or directory') &&
+                    !stderr.includes('cannot access')) {
+                    logger.warn(`ZeroTier command stderr: ${stderr}`);
+                }
             }
             return stdout.trim();
         } catch (error) {
@@ -164,14 +169,43 @@ class ZeroTierManager {
             await this.executeCommand(`cp ${zerotierOnePath} ${chrootPath}/usr/bin/`);
             await this.executeCommand(`cp ${zerotierCliPath} ${chrootPath}/usr/bin/`);
             
-            // Copy required libraries
-            const libraries = await this.executeCommand(`ldd ${zerotierOnePath} | grep "=>" | awk '{print $3}'`);
-            for (const lib of libraries.split('\n').filter(l => l.trim())) {
-                const libPath = lib.trim();
-                if (libPath && libPath !== 'null') {
-                    const targetDir = `${chrootPath}${libPath.substring(0, libPath.lastIndexOf('/'))}`;
+            // Copy required libraries (handle both dynamic and static executables)
+            try {
+                const libraries = await this.executeCommand(`ldd ${zerotierOnePath} | grep "=>" | awk '{print $3}'`);
+                if (libraries.trim()) {
+                    logger.debug('Copying dynamic libraries for ZeroTier...');
+                    for (const lib of libraries.split('\n').filter(l => l.trim())) {
+                        const libPath = lib.trim();
+                        if (libPath && libPath !== 'null') {
+                            const targetDir = `${chrootPath}${libPath.substring(0, libPath.lastIndexOf('/'))}`;
+                            await this.executeCommand(`mkdir -p ${targetDir}`);
+                            await this.executeCommand(`cp ${libPath} ${chrootPath}${libPath} 2>/dev/null || true`);
+                        }
+                    }
+                } else {
+                    logger.debug('ZeroTier appears to be statically linked, skipping library copying');
+                }
+            } catch (error) {
+                logger.debug('ZeroTier appears to be statically linked or ldd failed, skipping library copying');
+            }
+            
+            // Copy essential system libraries that might be needed regardless
+            const essentialLibs = [
+                '/lib64/ld-linux-x86-64.so.2',
+                '/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2',
+                '/usr/lib64/ld-linux-x86-64.so.2',
+                '/lib/ld-linux.so.2',
+                '/lib64/libc.so.6',
+                '/lib/x86_64-linux-gnu/libc.so.6'
+            ];
+            
+            for (const lib of essentialLibs) {
+                try {
+                    const targetDir = `${chrootPath}${lib.substring(0, lib.lastIndexOf('/'))}`;
                     await this.executeCommand(`mkdir -p ${targetDir}`);
-                    await this.executeCommand(`cp ${libPath} ${chrootPath}${libPath} 2>/dev/null || true`);
+                    await this.executeCommand(`cp ${lib} ${chrootPath}${lib} 2>/dev/null || true`);
+                } catch (error) {
+                    // Ignore errors - these libraries might not exist on all systems
                 }
             }
             
