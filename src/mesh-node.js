@@ -92,9 +92,12 @@ class MeshNode {
             // Initialize batman-adv
             await this.networkManager.initializeBatman();
             
-            // Wait for IP assignment (DHCP for nodes)
-            logger.info('Waiting for IP assignment via DHCP...');
-            const nodeIP = await this.networkManager.waitForBatmanIP();
+            // Request IP assignment via DHCP from coordinator
+            logger.info('Requesting IP assignment via DHCP from coordinator...');
+            await this.zeroTierManager.configureNodeGatewayRouting('bat0');
+            
+            // Get the assigned IP for logging
+            const nodeIP = await this.networkManager.getBatmanInterfaceIP();
             logger.info(`Node assigned batman IP: ${nodeIP}`);
             
             // Wait for batman mesh to stabilize
@@ -110,8 +113,9 @@ class MeshNode {
                 try {
                     await this.zeroTierManager.initialize();
                     
-                    // Configure ZeroTier routing for mesh node (via batman)
-                    await this.zeroTierManager.configureRoutingForMesh(false);
+                    // Skip redundant DHCP configuration since we already did it above
+                    // Just setup ZeroTier-specific routing without re-doing DHCP
+                    logger.info('ZeroTier routing already configured via DHCP, verifying setup...');
                     
                     await this.waitForZeroTierConnection();
                     logger.info('ZeroTier connected through mesh');
