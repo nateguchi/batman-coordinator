@@ -68,10 +68,7 @@ class SecurityManager {
                 await this.setupIptablesRules();
             }
             
-            // Configure ZeroTier routing for mesh nodes
-            if (!this.isCoordinator) {
-                await this.setupZeroTierMeshRouting();
-            }
+            // Note: ZeroTier routing now handled by ZeroTierManager using process-based marking
             
             logger.info('Firewall rules configured successfully');
             
@@ -219,11 +216,8 @@ table inet batman_filter {
         oif ${this.ethernetInterface} accept
         oif eth0 accept
         ` : `
-        # Mesh node: Allow normal ethernet output except ZeroTier
-        oif ${this.ethernetInterface} udp dport 9993 drop
-        oif ${this.ethernetInterface} tcp dport 9993 drop
-        oif eth0 udp dport 9993 drop
-        oif eth0 tcp dport 9993 drop
+        # Mesh node: Allow normal ethernet output 
+        # Note: ZeroTier traffic routing handled by process-based marking in ZeroTierManager
         oif ${this.ethernetInterface} accept
         oif eth0 accept
         `}
@@ -308,6 +302,13 @@ table inet batman_nat {
     }
 
     async setupZeroTierMeshRouting() {
+        // DEPRECATED: This method has been replaced by process-based routing in ZeroTierManager
+        // The new approach uses iptables process/UID/port marking with custom routing tables
+        // instead of blanket port blocking which prevented ZeroTier from working properly
+        logger.info('ZeroTier mesh routing now handled by ZeroTierManager - skipping legacy setup');
+        return;
+        
+        /* OLD IMPLEMENTATION - CAUSES CONFLICTS
         logger.info('Setting up ZeroTier routing through batman mesh...');
         
         try {
@@ -335,6 +336,7 @@ table inet batman_nat {
             logger.error('Failed to setup ZeroTier mesh routing:', error);
             // Don't throw as this is not critical for basic functionality
         }
+        */
     }
 
     async hardenSystem() {

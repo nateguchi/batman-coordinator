@@ -280,17 +280,23 @@ echo 'net.core.rps_sock_flow_entries = 32768' >> /etc/sysctl.conf
 # Test the routing configuration script
 node test-zerotier-routing.js
 
+# Check for conflicting rules
+node test-conflict-check.js
+
 # Check current network state
 node test-zerotier-routing.js state
 
 # Verify iptables marking rules
-sudo iptables -t mangle -L OUTPUT -n -v | grep zerotier
+sudo iptables -t mangle -L OUTPUT -n -v | grep -E "(zerotier|9993|0x100)"
 
 # Check custom routing table
 ip route show table 100
 
 # Verify IP rules
 ip rule show | grep 0x100
+
+# Check for conflicting DROP rules
+sudo iptables -L OUTPUT -n -v | grep -E "(DROP.*9993|9993.*DROP)"
 ```
 
 #### Debug ZeroTier Routing
@@ -320,6 +326,8 @@ ip route add default via 192.168.100.1 dev bat0 table 100
 - **Missing iptables rules**: Ensure script runs with root privileges
 - **Custom routing table empty**: Verify batman interface has valid gateway IP
 - **ZeroTier UID not found**: System falls back to port-based marking (UDP 9993)
+- **Conflicting firewall rules**: Run `node test-conflict-check.js` to identify and clean up conflicts
+- **DROP rules for port 9993**: Remove old SecurityManager rules that block ZeroTier
 
 ### Batman-adv Issues
 ```bash

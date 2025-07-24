@@ -201,6 +201,9 @@ class ZeroTierManager {
 
     async configureRoutingForMesh(isCoordinator = false) {
         try {
+            // First, clean up any conflicting rules from old implementations
+            await this.cleanupConflictingRules();
+            
             const networks = await this.getNetworks();
             const targetNetwork = networks.find(n => n.id === this.networkId);
             
@@ -228,6 +231,31 @@ class ZeroTierManager {
             
         } catch (error) {
             logger.error('Failed to configure ZeroTier routing:', error);
+        }
+    }
+
+    async cleanupConflictingRules() {
+        try {
+            logger.info('Cleaning up any conflicting ZeroTier routing rules');
+            
+            // Remove old SecurityManager rules that might conflict
+            await this.executeCommand('ip rule del fwmark 1 table zerotier 2>/dev/null || true');
+            await this.executeCommand('ip route flush table zerotier 2>/dev/null || true');
+            
+            // Remove old iptables marking rules with mark 1
+            await this.executeCommand('iptables -t mangle -D OUTPUT -p udp --dport 9993 -j MARK --set-mark 1 2>/dev/null || true');
+            await this.executeCommand('iptables -t mangle -D OUTPUT -p tcp --dport 9993 -j MARK --set-mark 1 2>/dev/null || true');
+            
+            // Remove any DROP rules for ZeroTier ports
+            await this.executeCommand(`iptables -D OUTPUT -o ${process.env.ETHERNET_INTERFACE || 'eth1'} -p udp --dport 9993 -j DROP 2>/dev/null || true`);
+            await this.executeCommand(`iptables -D OUTPUT -o ${process.env.ETHERNET_INTERFACE || 'eth1'} -p tcp --dport 9993 -j DROP 2>/dev/null || true`);
+            await this.executeCommand('iptables -D OUTPUT -o eth0 -p udp --dport 9993 -j DROP 2>/dev/null || true');
+            await this.executeCommand('iptables -D OUTPUT -o eth0 -p tcp --dport 9993 -j DROP 2>/dev/null || true');
+            
+            logger.info('Conflicting rules cleanup complete');
+            
+        } catch (error) {
+            logger.debug('Conflicting rules cleanup failed (may be normal):', error.message);
         }
     }
 
