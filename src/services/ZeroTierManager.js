@@ -343,7 +343,18 @@ class ZeroTierManager {
             // Join the ZeroTier network if specified
             if (this.networkId) {
                 logger.info(`Joining ZeroTier network ${this.networkId} in namespace...`);
-                await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli join ${this.networkId}`);
+                
+                // First check if ZeroTier is responding
+                try {
+                    const infoResult = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli info`);
+                    logger.debug(`ZeroTier info before joining: ${infoResult}`);
+                } catch (infoError) {
+                    logger.warn(`ZeroTier CLI not responding before join: ${infoError.message}`);
+                }
+                
+                // Join the network
+                const joinResult = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli join ${this.networkId}`);
+                logger.debug(`ZeroTier join result: ${joinResult}`);
                 
                 // Wait for network to be ready
                 await this.waitForNamespacedZeroTierReady(nsName, chrootPath);
@@ -355,12 +366,40 @@ class ZeroTierManager {
         }
     }
     
-    async waitForNamespacedZeroTierReady(nsName, chrootPath, maxAttempts = 60) {
+    async waitForNamespacedZeroTierReady(nsName, chrootPath, maxAttempts = 30) {
         logger.info('Waiting for ZeroTier network to be ready in namespace...');
         
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
+                // First check if ZeroTier process is still running in namespace
+                const nsProcesses = await this.executeCommand(`ip netns exec ${nsName} ps aux | grep zerotier || echo "not found"`);
+                if (!nsProcesses.includes('zerotier-one')) {
+                    logger.warn('ZeroTier process not found in namespace, attempting to restart...');
+                    throw new Error('ZeroTier process died in namespace');
+                }
+                
+                // Check ZeroTier info to see if it's responding
+                let infoOutput;
+                try {
+                    infoOutput = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli info`);
+                    logger.debug(`ZeroTier info (attempt ${attempt}): ${infoOutput}`);
+                } catch (infoError) {
+                    logger.debug(`ZeroTier CLI not responding yet (attempt ${attempt}): ${infoError.message}`);
+                    
+                    // If we're past attempt 10 and CLI still not responding, something is wrong
+                    if (attempt > 10) {
+                        logger.warn('ZeroTier CLI not responding after 10 attempts, this may indicate a problem');
+                        // Don't continue waiting if CLI is completely unresponsive
+                        throw new Error('ZeroTier CLI unresponsive in namespace');
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    continue;
+                }
+                
                 const networks = await this.getNamespacedNetworks(nsName, chrootPath);
+                logger.debug(`ZeroTier networks (attempt ${attempt}):`, networks);
+                
                 const targetNetwork = networks.find(n => n.id === this.networkId);
                 
                 if (targetNetwork && 
@@ -371,21 +410,46 @@ class ZeroTierManager {
                     return targetNetwork;
                 }
                 
-                logger.debug(`⏳ ZeroTier network not ready yet, attempt ${attempt}/${maxAttempts}`);
+                if (targetNetwork) {
+                    logger.debug(`⏳ ZeroTier network found but not ready yet (status: ${targetNetwork.status}, IPs: ${targetNetwork.assignedAddresses.length}), attempt ${attempt}/${maxAttempts}`);
+                } else {
+                    logger.debug(`⏳ ZeroTier network ${this.networkId} not found yet, attempt ${attempt}/${maxAttempts}`);
+                }
+                
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 
             } catch (error) {
                 logger.debug(`ZeroTier check failed on attempt ${attempt}:`, error.message);
+                
+                // If we hit certain errors multiple times, give up early
+                if (error.message.includes('ZeroTier CLI unresponsive') || 
+                    error.message.includes('ZeroTier process died')) {
+                    throw error;
+                }
+                
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
         
-        throw new Error('ZeroTier network ready timeout in namespace');
+        // Final diagnostic before giving up
+        try {
+            logger.warn('ZeroTier network readiness timeout - running final diagnostics...');
+            const finalInfo = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli info 2>&1 || echo "CLI failed"`);
+            const finalNetworks = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli listnetworks 2>&1 || echo "listnetworks failed"`);
+            logger.warn(`Final ZeroTier info: ${finalInfo}`);
+            logger.warn(`Final ZeroTier networks: ${finalNetworks}`);
+        } catch (diagError) {
+            logger.warn('Failed to run final diagnostics:', diagError.message);
+        }
+        
+        throw new Error('ZeroTier network ready timeout in namespace - check network authorization on ZeroTier Central');
     }
     
     async getNamespacedNetworks(nsName, chrootPath) {
         try {
             const output = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli listnetworks`);
+            logger.debug(`Raw ZeroTier listnetworks output: ${output}`);
+            
             const networks = [];
             
             const lines = output.split('\n');
