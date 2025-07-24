@@ -35,7 +35,7 @@ Internet ← → Master Pi (Coordinator) ← → Mesh Network ← → Node Pis
 ```bash
 sudo apt update
 sudo apt install -y curl wget gnupg2 software-properties-common
-sudo apt install -y batman-adv-dkms batctl bridge-utils
+sudo apt install -y batctl bridge-utils
 sudo apt install -y iptables iptables-persistent
 sudo apt install -y iw wireless-tools wpasupplicant
 sudo apt install -y nodejs npm git
@@ -45,7 +45,7 @@ sudo apt install -y nodejs npm git
 ```bash
 sudo apt update
 sudo apt install -y curl wget gnupg2 software-properties-common
-sudo apt install -y batman-adv-dkms batctl bridge-utils
+sudo apt install -y batctl bridge-utils
 sudo apt install -y iptables iptables-persistent nftables
 sudo apt install -y iw wireless-tools wpasupplicant
 sudo apt install -y nodejs npm git
@@ -167,10 +167,10 @@ The SecurityManager provides targeted protection for the batman mesh network whi
 ### Network Isolation
 - **Security focus**: Prevents unauthorized users from accessing internet through the mesh network
 - **Node access**: All nodes have full ethernet access for legitimate operations and management
-- **ZeroTier routing**: Mesh nodes use process-based routing to force ZeroTier traffic through batman mesh
+- **Gateway routing**: Mesh nodes route all internet traffic through batman mesh to coordinator
 - **Mesh isolation**: Batman mesh traffic is isolated and cannot be forwarded to ethernet interfaces
-- **Coordinator gateway**: Only coordinator provides authorized internet access to specific mesh services
-- **Process marking**: ZeroTier process traffic is marked using iptables and routed through custom routing table via batman interface
+- **Coordinator gateway**: Coordinator acts as full internet gateway for all mesh node traffic
+- **Default routing**: All node internet traffic (including ZeroTier) goes through coordinator via batman interface
 
 ### Encryption
 - ZeroTier provides end-to-end encryption
@@ -194,6 +194,55 @@ The SecurityManager provides targeted protection for the batman mesh network whi
 
 ## Troubleshooting
 
+### NetworkManager Conflicts
+
+NetworkManager can interfere with manual wireless configuration. Here are solutions:
+
+#### Disable NetworkManager for mesh interface
+```bash
+# Check if NetworkManager is installed and running
+if systemctl is-active --quiet NetworkManager; then
+    echo "NetworkManager is running, configuring ignore rules..."
+    
+    # Create configuration directory if it doesn't exist
+    sudo mkdir -p /etc/NetworkManager/conf.d/
+    
+    # Create NetworkManager ignore rule
+    sudo tee /etc/NetworkManager/conf.d/99-unmanaged-devices.conf << EOF
+[keyfile]
+unmanaged-devices=interface-name:wlan0;interface-name:wlan1;interface-name:bat0
+EOF
+
+    # Restart NetworkManager
+    sudo systemctl restart NetworkManager
+else
+    echo "NetworkManager not running - no configuration needed"
+fi
+
+# Alternative: temporarily stop NetworkManager if running
+sudo systemctl stop NetworkManager 2>/dev/null || echo "NetworkManager not running"
+```
+
+#### Alternative: Use systemd-networkd
+```bash
+# Disable NetworkManager
+sudo systemctl disable NetworkManager
+sudo systemctl stop NetworkManager
+
+# Enable systemd-networkd
+sudo systemctl enable systemd-networkd
+sudo systemctl start systemd-networkd
+```
+
+#### Manual interface management
+```bash
+# Take control of interface from NetworkManager
+sudo nmcli device set <interface> managed no
+
+# Verify it's unmanaged
+nmcli device status
+```
+
 ### Common Issues
 
 #### Batman interface not coming up
@@ -216,13 +265,114 @@ sudo zerotier-cli join <network-id>
 ```
 
 #### Wireless interface issues
+
+##### "Operation already in progress (-114)" Error
+This error occurs when the interface is stuck in a transition state or already connected:
+
 ```bash
-# Reset wireless interface
+# Step 1: Disconnect from any existing networks
+sudo iw <interface> disconnect
+
+# Step 2: Leave any existing IBSS networks
+sudo iw <interface> ibss leave
+
+# Step 3: Kill any conflicting processes
+sudo pkill wpa_supplicant
+sudo pkill NetworkManager
+
+# Step 4: Reset the interface completely
+sudo ip link set <interface> down
+sudo rfkill unblock wifi
+sudo ip link set <interface> up
+
+# Step 5: Set to IBSS mode and join
+sudo iw <interface> set type ibss
+sudo iw <interface> ibss join <ssid> <frequency>
+```
+
+##### "Connection timed out (-110)" Error
+This indicates hardware or driver issues:
+
+```bash
+# Check if interface supports IBSS mode
+iw <interface> info | grep -i ibss
+
+# Check available channels
+iw phy phy0 channels | grep -E "(MHz|disabled)"
+
+# Reset wireless hardware
+sudo modprobe -r brcmfmac  # For Raspberry Pi WiFi
+sudo modprobe brcmfmac
+
+# Try different frequency/channel
+sudo iw <interface> ibss join <ssid> 2462  # Channel 11
+sudo iw <interface> ibss join <ssid> 2437  # Channel 6
+```
+
+##### General wireless interface reset
+```bash
+# Complete interface reset
 sudo ip link set <interface> down
 sudo iw <interface> set type ibss
 sudo ip link set <interface> up
 sudo iw <interface> ibss join <ssid> <frequency>
 ```
+
+##### Check interface status
+```bash
+# View current interface state
+iw <interface> info
+iw <interface> link
+
+# Check for errors in system logs
+sudo dmesg | tail -20
+sudo journalctl -u NetworkManager | tail -20
+```
+
+### Quick Fix Script
+
+For immediate resolution of the "Operation already in progress" error:
+
+```bash
+#!/bin/bash
+# Quick fix for wireless interface issues
+INTERFACE=${1:-wlan0}
+SSID=${2:-batman-mesh}
+FREQ=${3:-2437}
+
+echo "Resetting wireless interface $INTERFACE..."
+
+# Stop conflicting services (only if they exist)
+sudo pkill wpa_supplicant 2>/dev/null || true
+if systemctl is-active --quiet NetworkManager; then
+    sudo systemctl stop NetworkManager
+    echo "Stopped NetworkManager"
+else
+    echo "NetworkManager not running"
+fi
+
+# Take control from NetworkManager if it exists
+if command -v nmcli >/dev/null 2>&1; then
+    sudo nmcli device set $INTERFACE managed no 2>/dev/null || true
+fi
+
+# Reset interface
+sudo iw $INTERFACE disconnect 2>/dev/null || true
+sudo iw $INTERFACE ibss leave 2>/dev/null || true
+sudo ip link set $INTERFACE down
+sudo rfkill unblock wifi
+sleep 2
+
+# Configure for IBSS
+sudo ip link set $INTERFACE up
+sudo iw $INTERFACE set type ibss
+sudo iw $INTERFACE ibss join $SSID $FREQ
+
+echo "Interface status:"
+iw $INTERFACE info
+```
+
+Save this as `fix-wireless.sh` and run: `chmod +x fix-wireless.sh && sudo ./fix-wireless.sh wlan0 oobnet 2412`
 
 ### Log Files
 - Coordinator logs: `logs/coordinator.log`
@@ -275,28 +425,49 @@ echo 'net.core.rps_sock_flow_entries = 32768' >> /etc/sysctl.conf
 
 ### ZeroTier Connectivity Issues
 
-#### Check Process-Based Routing (Mesh Nodes)
+### ZeroTier Connectivity Issues
+
+#### Check Gateway Routing (New Approach)
 ```bash
-# Test the routing configuration script
+# Test the new gateway routing configuration script
+node test-gateway-routing.js
+
+# Check gateway routing status
+node test-gateway-routing.js --status
+
+# Check if coordinator has NAT configured
+sudo iptables -t nat -L POSTROUTING -n -v | grep MASQUERADE
+
+# Check if node has default route via coordinator
+ip route show | grep "default via 192.168.100.1 dev bat0"
+
+# Check IP forwarding on coordinator
+cat /proc/sys/net/ipv4/ip_forward
+
+# Test internet connectivity through mesh
+ping -c 3 8.8.8.8
+
+# Check batman interface status
+sudo batctl n
+sudo batctl rt
+```
+
+#### Legacy Process-Based Routing (Old Approach)
+```bash
+# Test the old routing configuration script (deprecated)
 node test-zerotier-routing.js
 
 # Check for conflicting rules
 node test-conflict-check.js
 
-# Check current network state
-node test-zerotier-routing.js state
-
-# Verify iptables marking rules
+# Verify iptables marking rules (old method)
 sudo iptables -t mangle -L OUTPUT -n -v | grep -E "(zerotier|9993|0x100)"
 
-# Check custom routing table
+# Check custom routing table (old method)
 ip route show table 100
 
-# Verify IP rules
+# Verify IP rules (old method)
 ip rule show | grep 0x100
-
-# Check for conflicting DROP rules
-sudo iptables -L OUTPUT -n -v | grep -E "(DROP.*9993|9993.*DROP)"
 ```
 
 #### Debug ZeroTier Routing

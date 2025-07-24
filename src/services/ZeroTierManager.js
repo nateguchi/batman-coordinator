@@ -215,16 +215,18 @@ class ZeroTierManager {
             const ztInterface = targetNetwork.interface;
             const batmanInterface = process.env.BATMAN_INTERFACE || 'bat0';
             
+            // New approach: Coordinator acts as full internet gateway for all mesh traffic
+            // This allows all applications on mesh nodes to access internet through the coordinator
             if (isCoordinator) {
-                // Coordinator: Allow ZeroTier to use ethernet for internet access
-                logger.info('Coordinator: Allowing ZeroTier normal routing via ethernet');
-                // No special routing needed for coordinator - it has internet access
+                // Coordinator: Act as full internet gateway for all mesh nodes
+                logger.info('Coordinator: Setting up as full internet gateway for mesh network');
+                await this.configureCoordinatorGateway(batmanInterface);
                 
             } else {
-                // Node: Force all ZeroTier process traffic through batman mesh using process matching
-                logger.info(`Configuring node ZeroTier process routing via ${batmanInterface}`);
+                // Node: Route all internet traffic through batman mesh to coordinator
+                logger.info(`Configuring node to route all internet traffic via ${batmanInterface}`);
                 
-                await this.configureProcessBasedRouting(batmanInterface);
+                await this.configureNodeGatewayRouting(batmanInterface);
             }
             
             logger.info('ZeroTier routing configured for mesh operation');
@@ -237,6 +239,11 @@ class ZeroTierManager {
     async cleanupConflictingRules() {
         try {
             logger.info('Cleaning up any conflicting ZeroTier routing rules');
+            
+            // Clean up both old process-based routing and gateway routing
+            await this.cleanupProcessBasedRouting();
+            await this.cleanupGatewayRouting(true);  // Try coordinator cleanup
+            await this.cleanupGatewayRouting(false); // Try node cleanup
             
             // Remove old SecurityManager rules that might conflict
             await this.executeCommand('ip rule del fwmark 1 table zerotier 2>/dev/null || true');
@@ -351,6 +358,69 @@ class ZeroTierManager {
         }
     }
 
+    async configureCoordinatorGateway(batmanInterface) {
+        try {
+            const meshSubnet = process.env.MESH_SUBNET || '192.168.100.0/24';
+            const ethernetInterface = process.env.ETHERNET_INTERFACE || 'eth0';
+            
+            logger.info('Setting up coordinator as full internet gateway');
+            
+            // Enable IP forwarding
+            await this.executeCommand('echo 1 > /proc/sys/net/ipv4/ip_forward');
+            await this.executeCommand('sysctl -w net.ipv4.ip_forward=1');
+            
+            // Setup NAT for mesh traffic going to internet
+            await this.executeCommand(`iptables -t nat -D POSTROUTING -s ${meshSubnet} -o ${ethernetInterface} -j MASQUERADE 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t nat -A POSTROUTING -s ${meshSubnet} -o ${ethernetInterface} -j MASQUERADE`);
+            
+            // Allow forwarding from batman interface to ethernet
+            await this.executeCommand(`iptables -D FORWARD -i ${batmanInterface} -o ${ethernetInterface} -j ACCEPT 2>/dev/null || true`);
+            await this.executeCommand(`iptables -A FORWARD -i ${batmanInterface} -o ${ethernetInterface} -j ACCEPT`);
+            
+            // Allow established connections back
+            await this.executeCommand(`iptables -D FORWARD -i ${ethernetInterface} -o ${batmanInterface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true`);
+            await this.executeCommand(`iptables -A FORWARD -i ${ethernetInterface} -o ${batmanInterface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`);
+            
+            logger.info(`Coordinator configured as internet gateway for mesh subnet ${meshSubnet}`);
+            
+        } catch (error) {
+            logger.error('Failed to configure coordinator gateway:', error);
+            throw error;
+        }
+    }
+
+    async configureNodeGatewayRouting(batmanInterface) {
+        try {
+            const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
+            
+            logger.info('Setting up node to route all internet traffic through coordinator');
+            
+            // Remove any existing default routes (except local interfaces)
+            await this.executeCommand('ip route del default 2>/dev/null || true');
+            
+            // Set coordinator as default gateway via batman interface
+            await this.executeCommand(`ip route add default via ${coordinatorIP} dev ${batmanInterface} metric 100`);
+            
+            // Ensure we can still reach local mesh network
+            const meshSubnet = process.env.MESH_SUBNET || '192.168.100.0/24';
+            await this.executeCommand(`ip route add ${meshSubnet} dev ${batmanInterface} 2>/dev/null || true`);
+            
+            // Add specific route for ZeroTier network if available
+            const networks = await this.getNetworks();
+            const targetNetwork = networks.find(n => n.id === this.networkId);
+            if (targetNetwork && targetNetwork.assignedAddresses.length > 0) {
+                const ztNetwork = this.extractNetworkFromIP(targetNetwork.assignedAddresses[0]);
+                await this.executeCommand(`ip route add ${ztNetwork} via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
+            }
+            
+            logger.info(`Node configured to route all traffic via ${coordinatorIP} through ${batmanInterface}`);
+            
+        } catch (error) {
+            logger.error('Failed to configure node gateway routing:', error);
+            throw error;
+        }
+    }
+
     extractNetworkFromIP(ipWithMask) {
         // Convert IP like "10.147.20.123/24" to network "10.147.20.0/24"
         if (ipWithMask.includes('/')) {
@@ -436,6 +506,103 @@ class ZeroTierManager {
             
         } catch (error) {
             logger.error('Failed to cleanup process-based routing:', error);
+        }
+    }
+
+    async cleanupGatewayRouting(isCoordinator = false) {
+        try {
+            logger.info('Cleaning up gateway routing configuration');
+            
+            if (isCoordinator) {
+                // Clean up coordinator NAT and forwarding rules
+                const meshSubnet = process.env.MESH_SUBNET || '192.168.100.0/24';
+                const ethernetInterface = process.env.ETHERNET_INTERFACE || 'eth0';
+                const batmanInterface = process.env.BATMAN_INTERFACE || 'bat0';
+                
+                // Remove NAT rules
+                await this.executeCommand(`iptables -t nat -D POSTROUTING -s ${meshSubnet} -o ${ethernetInterface} -j MASQUERADE 2>/dev/null || true`);
+                
+                // Remove forwarding rules
+                await this.executeCommand(`iptables -D FORWARD -i ${batmanInterface} -o ${ethernetInterface} -j ACCEPT 2>/dev/null || true`);
+                await this.executeCommand(`iptables -D FORWARD -i ${ethernetInterface} -o ${batmanInterface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true`);
+                
+                logger.info('Coordinator gateway routing cleanup complete');
+            } else {
+                // Clean up node routing - restore default routes if needed
+                const batmanInterface = process.env.BATMAN_INTERFACE || 'bat0';
+                const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
+                
+                // Remove default route via coordinator
+                await this.executeCommand(`ip route del default via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
+                
+                logger.info('Node gateway routing cleanup complete');
+            }
+            
+        } catch (error) {
+            logger.error('Failed to cleanup gateway routing:', error);
+        }
+    }
+
+    async verifyGatewayRouting(isCoordinator = false) {
+        try {
+            logger.debug('Verifying gateway routing configuration');
+            
+            if (isCoordinator) {
+                // Check coordinator gateway configuration
+                const meshSubnet = process.env.MESH_SUBNET || '192.168.100.0/24';
+                const ethernetInterface = process.env.ETHERNET_INTERFACE || 'eth0';
+                const batmanInterface = process.env.BATMAN_INTERFACE || 'bat0';
+                
+                // Check IP forwarding
+                const ipForwarding = await this.executeCommand('cat /proc/sys/net/ipv4/ip_forward');
+                const hasIpForwarding = ipForwarding.trim() === '1';
+                
+                // Check NAT rules
+                const natRules = await this.executeCommand('iptables -t nat -L POSTROUTING -n -v');
+                const hasNatRule = natRules.includes('MASQUERADE') && natRules.includes(meshSubnet);
+                
+                // Check forwarding rules
+                const forwardRules = await this.executeCommand('iptables -L FORWARD -n -v');
+                const hasForwardRules = forwardRules.includes(batmanInterface) && forwardRules.includes(ethernetInterface);
+                
+                const status = {
+                    role: 'coordinator',
+                    hasIpForwarding,
+                    hasNatRule,
+                    hasForwardRules,
+                    isConfigured: hasIpForwarding && hasNatRule && hasForwardRules
+                };
+                
+                logger.debug('Coordinator gateway status:', status);
+                return status;
+                
+            } else {
+                // Check node gateway configuration
+                const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
+                const batmanInterface = process.env.BATMAN_INTERFACE || 'bat0';
+                
+                // Check default route
+                const routes = await this.executeCommand('ip route show');
+                const hasDefaultRoute = routes.includes(`default via ${coordinatorIP} dev ${batmanInterface}`);
+                
+                // Check mesh subnet route
+                const meshSubnet = process.env.MESH_SUBNET || '192.168.100.0/24';
+                const hasMeshRoute = routes.includes(`${meshSubnet} dev ${batmanInterface}`) || routes.includes('192.168.100.0/24');
+                
+                const status = {
+                    role: 'node',
+                    hasDefaultRoute,
+                    hasMeshRoute,
+                    isConfigured: hasDefaultRoute && hasMeshRoute
+                };
+                
+                logger.debug('Node gateway status:', status);
+                return status;
+            }
+            
+        } catch (error) {
+            logger.error('Failed to verify gateway routing:', error);
+            return { isConfigured: false, error: error.message };
         }
     }
 
@@ -534,15 +701,26 @@ class ZeroTierManager {
                 logger.warn('Could not get main routing table:', error.message);
             }
             
-            // Verify process-based routing
+            // Verify process-based routing (old method)
             const routingStatus = await this.verifyProcessBasedRouting();
             logger.info('Process-based routing status:', routingStatus);
+            
+            // Verify gateway routing (new method) - try both coordinator and node
+            let gatewayStatus = {};
+            try {
+                gatewayStatus.coordinator = await this.verifyGatewayRouting(true);
+                gatewayStatus.node = await this.verifyGatewayRouting(false);
+                logger.info('Gateway routing status:', gatewayStatus);
+            } catch (error) {
+                logger.warn('Could not verify gateway routing:', error.message);
+            }
             
             logger.info('=== End Debug Information ===');
             
             return {
                 ztStatus: status,
-                routingStatus: routingStatus
+                routingStatus: routingStatus,
+                gatewayStatus: gatewayStatus
             };
             
         } catch (error) {

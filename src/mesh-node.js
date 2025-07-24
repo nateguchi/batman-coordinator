@@ -499,9 +499,10 @@ class MeshNode {
                 await this.heartbeat.stop();
             }
             
-            // Cleanup ZeroTier process-based routing
+            // Cleanup ZeroTier routing (both old process-based and new gateway routing)
             try {
                 await this.zeroTierManager.cleanupProcessBasedRouting();
+                await this.zeroTierManager.cleanupGatewayRouting(false); // false = node cleanup
             } catch (error) {
                 logger.warn('Failed to cleanup ZeroTier routing:', error.message);
             }

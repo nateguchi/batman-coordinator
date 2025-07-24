@@ -494,6 +494,12 @@ class Coordinator {
         
         // Cleanup network configuration
         try {
+            // Cleanup ZeroTier routing (coordinator cleanup)
+            if (this.zeroTierManager) {
+                await this.zeroTierManager.cleanupProcessBasedRouting();
+                await this.zeroTierManager.cleanupGatewayRouting(true); // true = coordinator cleanup
+            }
+            
             await this.networkManager.cleanup();
             await this.securityManager.cleanup();
         } catch (error) {
