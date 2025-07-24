@@ -17,12 +17,17 @@ class ZeroTierManager {
         try {
             logger.debug(`Executing ZeroTier command: ${command}`);
             const { stdout, stderr } = await execAsync(command, { timeout: 30000, ...options });
-            if (stderr && !options.ignoreStderr) {
+            if (stderr && !options.ignoreStderr && !command.includes('2>/dev/null')) {
                 logger.warn(`ZeroTier command stderr: ${stderr}`);
             }
             return stdout.trim();
         } catch (error) {
-            logger.error(`ZeroTier command failed: ${command}`, error);
+            // Don't log errors for commands that are expected to potentially fail
+            if (!command.includes('2>/dev/null') && !command.includes('|| true')) {
+                logger.error(`ZeroTier command failed: ${command}`, error);
+            } else {
+                logger.debug(`ZeroTier command failed (expected): ${command} - ${error.message}`);
+            }
             throw error;
         }
     }
@@ -64,8 +69,25 @@ class ZeroTierManager {
             await this.executeCommand('systemctl stop zerotier-one 2>/dev/null || true');
             await this.executeCommand('systemctl disable zerotier-one 2>/dev/null || true');
             
-            // Kill any running ZeroTier processes
-            await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
+            // Kill any running ZeroTier processes using multiple methods
+            try {
+                await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
+            } catch (error) {
+                logger.debug('pkill failed, trying killall...');
+                try {
+                    await this.executeCommand('killall zerotier-one 2>/dev/null || true');
+                } catch (error2) {
+                    logger.debug('killall failed, trying ps + kill...');
+                    try {
+                        const pids = await this.executeCommand('pgrep -f zerotier-one 2>/dev/null || echo ""');
+                        if (pids.trim()) {
+                            await this.executeCommand(`kill -TERM ${pids.trim().split('\n').join(' ')} 2>/dev/null || true`);
+                        }
+                    } catch (error3) {
+                        logger.debug('All process killing methods failed, continuing...');
+                    }
+                }
+            }
             
             // Wait for processes to stop
             await new Promise(resolve => setTimeout(resolve, 2000));
@@ -231,7 +253,24 @@ class ZeroTierManager {
             
             // Stop existing ZeroTier service (already done in initialize, but double-check)
             await this.executeCommand('systemctl stop zerotier-one 2>/dev/null || true');
-            await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
+            
+            // Kill any running ZeroTier processes using multiple methods
+            try {
+                await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
+            } catch (error) {
+                try {
+                    await this.executeCommand('killall zerotier-one 2>/dev/null || true');
+                } catch (error2) {
+                    try {
+                        const pids = await this.executeCommand('pgrep -f zerotier-one 2>/dev/null || echo ""');
+                        if (pids.trim()) {
+                            await this.executeCommand(`kill -TERM ${pids.trim().split('\n').join(' ')} 2>/dev/null || true`);
+                        }
+                    } catch (error3) {
+                        logger.debug('All process killing methods failed, continuing...');
+                    }
+                }
+            }
             
             // Copy ZeroTier data to chroot
             await this.executeCommand(`cp -r /var/lib/zerotier-one/* ${chrootPath}/var/lib/zerotier-one/ 2>/dev/null || true`);
@@ -410,8 +449,23 @@ class ZeroTierManager {
                 }
             }
             
-            // Kill any remaining ZeroTier processes
-            await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
+            // Kill any remaining ZeroTier processes using multiple methods
+            try {
+                await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
+            } catch (error) {
+                try {
+                    await this.executeCommand('killall zerotier-one 2>/dev/null || true');
+                } catch (error2) {
+                    try {
+                        const pids = await this.executeCommand('pgrep -f zerotier-one 2>/dev/null || echo ""');
+                        if (pids.trim()) {
+                            await this.executeCommand(`kill -TERM ${pids.trim().split('\n').join(' ')} 2>/dev/null || true`);
+                        }
+                    } catch (error3) {
+                        logger.debug('All process killing methods failed in cleanup, continuing...');
+                    }
+                }
+            }
             
             // Clean up network namespace
             const nsName = this.nsName || 'zt-batman';
