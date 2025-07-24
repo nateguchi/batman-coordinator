@@ -354,7 +354,7 @@ class NetworkManager {
         }
     }
 
-    async waitForBatmanIP(maxAttempts = 30) {
+    async waitForBatmanIP(maxAttempts = 120) {
         logger.info(`Waiting for IP assignment on ${this.batmanInterface}...`);
         
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -549,6 +549,8 @@ class NetworkManager {
             // Get interface statistics
             const neighbors = await this.getBatmanNeighbors();
             const routes = await this.getBatmanRoutes();
+
+            console.log(isUp, batmanWorking, version, neighbors, routes);
             
             return {
                 active: isUp && batmanWorking, // More robust check
