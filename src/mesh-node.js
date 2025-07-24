@@ -92,6 +92,10 @@ class MeshNode {
             // Initialize batman-adv
             await this.networkManager.initializeBatman();
             
+            // Wait for batman mesh network to be ready
+            logger.info('Waiting for batman mesh network to establish...');
+            await this.waitForBatmanMeshReady();
+            
             // Request IP assignment via DHCP from coordinator
             logger.info('Requesting IP assignment via DHCP from coordinator...');
             await this.zeroTierManager.configureNodeGatewayRouting('bat0');
@@ -100,11 +104,7 @@ class MeshNode {
             const nodeIP = await this.networkManager.getBatmanInterfaceIP();
             logger.info(`Node assigned batman IP: ${nodeIP}`);
             
-            // Wait for batman mesh to stabilize
-            logger.info('Waiting for batman mesh to stabilize...');
-            await new Promise(resolve => setTimeout(resolve, 10000));
-            
-            // Check if we can reach the coordinator through the mesh
+            // Test mesh connectivity to coordinator
             const canReachCoordinator = await this.testMeshConnectivity();
             if (canReachCoordinator) {
                 logger.info('Mesh connectivity established to coordinator');
@@ -284,6 +284,42 @@ class MeshNode {
         }
         
         throw new Error('ZeroTier connection timeout (mesh node can continue without external connectivity)');
+    }
+
+    async waitForBatmanMeshReady(maxAttempts = 30) {
+        logger.info('Waiting for batman mesh network to establish...');
+        
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                // Check if batman interface is up
+                const batmanStatus = await this.networkManager.getBatmanStatus();
+                if (!batmanStatus.active) {
+                    logger.debug(`Batman interface not active yet, attempt ${attempt}/${maxAttempts}`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    continue;
+                }
+                
+                // Check if we can see any batman neighbors (indicates mesh is working)
+                const neighbors = await this.networkManager.getBatmanNeighbors();
+                if (neighbors.length > 0) {
+                    logger.info(`✅ Batman mesh ready with ${neighbors.length} neighbor(s) (attempt ${attempt})`);
+                    // Give a little extra time for mesh to stabilize
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    return;
+                }
+                
+                logger.debug(`⏳ No batman neighbors found yet, waiting... attempt ${attempt}/${maxAttempts}`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+            } catch (error) {
+                logger.debug(`Batman mesh check failed on attempt ${attempt}:`, error.message);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+        
+        // If we get here, no neighbors were found but continue anyway
+        logger.warn(`Batman mesh not ready after ${maxAttempts} attempts, continuing anyway...`);
+        logger.warn('DHCP may fail if coordinator is not reachable through mesh');
     }
 
     async testMeshConnectivity() {
