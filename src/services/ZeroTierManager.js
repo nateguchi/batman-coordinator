@@ -739,10 +739,14 @@ class ZeroTierManager {
             
             // Check if iptables rule exists (any of the possible types)
             const iptablesRules = await this.executeCommand('iptables -t mangle -L OUTPUT -n -v');
-            const hasMarkingRule = (iptablesRules.includes('zerotier-one') || 
-                                   iptablesRules.includes('9993') || 
-                                   iptablesRules.includes('cgroup')) && 
-                                   iptablesRules.includes(markValue);
+            
+            // More comprehensive checking for marking rules
+            const hasUidRule = iptablesRules.includes('owner UID match') && iptablesRules.includes(markValue);
+            const hasPortRule = iptablesRules.includes('9993') && iptablesRules.includes(markValue);
+            const hasCgroupRule = iptablesRules.includes('cgroup') && iptablesRules.includes(markValue);
+            const hasZerotierNameRule = iptablesRules.includes('zerotier-one') && iptablesRules.includes(markValue);
+            
+            const hasMarkingRule = hasUidRule || hasPortRule || hasCgroupRule || hasZerotierNameRule;
             
             // Check if routing rule exists  
             const ipRules = await this.executeCommand('ip rule show');
@@ -757,13 +761,13 @@ class ZeroTierManager {
                 // Table might not exist
             }
             
-            // Determine marking method used
+            // Determine marking method used with more specific detection
             let markingMethod = 'none';
-            if (iptablesRules.includes('zerotier-one')) {
+            if (hasUidRule || hasZerotierNameRule) {
                 markingMethod = 'uid-based';
-            } else if (iptablesRules.includes('9993')) {
+            } else if (hasPortRule) {
                 markingMethod = 'port-based';
-            } else if (iptablesRules.includes('cgroup')) {
+            } else if (hasCgroupRule) {
                 markingMethod = 'cgroup-based';
             }
             
@@ -772,7 +776,13 @@ class ZeroTierManager {
                 hasRoutingRule, 
                 hasCustomRoutes,
                 markingMethod,
-                isConfigured: hasMarkingRule && hasRoutingRule && hasCustomRoutes
+                isConfigured: hasMarkingRule && hasRoutingRule && hasCustomRoutes,
+                details: {
+                    hasUidRule,
+                    hasPortRule,
+                    hasCgroupRule,
+                    hasZerotierNameRule
+                }
             };
             
             logger.debug('Process-based routing status:', status);
@@ -1091,14 +1101,31 @@ class ZeroTierManager {
                 const iptablesOutput = await this.executeCommand('iptables -t mangle -L OUTPUT -n -v --line-numbers');
                 console.log(iptablesOutput);
                 
-                // Check for specific ZeroTier markings
-                const hasUidRule = iptablesOutput.includes('zerotier-one') && iptablesOutput.includes(markValue);
+                // Check for specific ZeroTier markings with more comprehensive detection
+                const hasUidRule = (iptablesOutput.includes('owner UID match') || iptablesOutput.includes('zerotier-one')) && iptablesOutput.includes(markValue);
                 const hasPortRule = iptablesOutput.includes('9993') && iptablesOutput.includes(markValue);
                 const hasCgroupRule = iptablesOutput.includes('cgroup') && iptablesOutput.includes(markValue);
                 
                 console.log(`   ✓ UID-based marking: ${hasUidRule ? 'ENABLED' : 'DISABLED'}`);
                 console.log(`   ✓ Port-based marking: ${hasPortRule ? 'ENABLED' : 'DISABLED'}`);
                 console.log(`   ✓ Cgroup-based marking: ${hasCgroupRule ? 'ENABLED' : 'DISABLED'}`);
+                
+                // Show traffic stats for each rule
+                if (hasUidRule || hasPortRule || hasCgroupRule) {
+                    console.log('\n   Traffic Statistics from iptables:');
+                    const lines = iptablesOutput.split('\n');
+                    for (const line of lines) {
+                        if (line.includes(markValue) && (line.includes('owner') || line.includes('9993') || line.includes('cgroup'))) {
+                            const parts = line.trim().split(/\s+/);
+                            if (parts.length >= 3) {
+                                const ruleNum = parts[0];
+                                const packets = parts[1];
+                                const bytes = parts[2];
+                                console.log(`     Rule ${ruleNum}: ${packets} packets, ${bytes} bytes processed`);
+                            }
+                        }
+                    }
+                }
                 
             } catch (error) {
                 console.log('   ❌ Failed to check iptables rules:', error.message);
