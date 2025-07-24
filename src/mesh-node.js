@@ -30,6 +30,13 @@ class MeshNode {
         try {
             logger.info('Initializing mesh node...');
             
+            // Initialize configuration
+            this.config = {
+                zerotier: {
+                    networkId: process.env.ZEROTIER_NETWORK_ID
+                }
+            };
+            
             // Generate or get node ID
             this.nodeId = await this.generateNodeId();
             logger.info(`Node ID: ${this.nodeId}`);
@@ -40,13 +47,19 @@ class MeshNode {
             }
             
             // Setup network components
+            logger.debug('Starting network setup...');
             await this.setupNetworking();
+            logger.debug('Network setup complete');
             
             // Configure security
+            logger.debug('Starting security setup...');
             await this.setupSecurity();
+            logger.debug('Security setup complete');
             
             // Start monitoring and heartbeat
+            logger.debug('Starting services...');
             await this.startServices();
+            logger.debug('Services started');
             
             logger.info('Mesh node initialization complete');
             
@@ -97,8 +110,8 @@ class MeshNode {
             await this.waitForBatmanMeshReady();
             
             // Request IP assignment via DHCP from coordinator
-            logger.info('Requesting IP assignment via DHCP from coordinator...');
-            await this.zeroTierManager.configureNodeGatewayRouting('bat0');
+            logger.info('Setting up batman gateway client for DHCP...');
+            await this.networkManager.setupBatmanGatewayClient();
             
             // Get the assigned IP for logging
             const nodeIP = await this.networkManager.getBatmanInterfaceIP();
@@ -559,10 +572,29 @@ class MeshNode {
             process.on('SIGINT', () => this.stop());
             process.on('SIGTERM', () => this.stop());
             
+            // Keep the process alive
+            this.keepAlive();
+            
         } catch (error) {
             logger.error('Failed to start mesh node:', error);
             process.exit(1);
         }
+    }
+    
+    keepAlive() {
+        // Keep the process running with a simple interval
+        const keepAliveInterval = setInterval(() => {
+            if (!this.isRunning) {
+                clearInterval(keepAliveInterval);
+                return;
+            }
+            // Just a simple heartbeat to keep process alive
+            logger.debug('Mesh node heartbeat');
+        }, 30000); // Every 30 seconds
+        
+        // Also keep process alive with unref'd timer
+        const timer = setTimeout(() => {}, 2147483647); // Max timeout value
+        timer.unref(); // Don't block process exit
     }
 
     async stop() {
@@ -600,8 +632,12 @@ class MeshNode {
 
 // Start the mesh node
 if (require.main === module) {
+    // Add debug logging for startup
+    console.log('Starting mesh node...');
+    
     const node = new MeshNode();
     node.start().catch(error => {
+        console.error('Failed to start mesh node:', error);
         logger.error('Failed to start mesh node:', error);
         process.exit(1);
     });

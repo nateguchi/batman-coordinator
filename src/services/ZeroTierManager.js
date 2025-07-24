@@ -323,6 +323,57 @@ class ZeroTierManager {
             return [];
         }
     }
+    
+    async getStatus() {
+        try {
+            // If we have namespace info, use namespaced commands
+            if (this.nsName && this.chrootPath) {
+                const networks = await this.getNamespacedNetworks(this.nsName, this.chrootPath);
+                return {
+                    online: networks.length > 0 && networks.some(n => n.status === 'OK'),
+                    networks: networks
+                };
+            }
+            
+            // Otherwise return offline status
+            return {
+                online: false,
+                networks: []
+            };
+            
+        } catch (error) {
+            logger.error('Failed to get ZeroTier status:', error);
+            return {
+                online: false,
+                networks: []
+            };
+        }
+    }
+    
+    async reconnect() {
+        try {
+            logger.info('Attempting to reconnect ZeroTier...');
+            
+            // For chroot-based setup, just check if it's still running
+            if (this.zerotierProcess && !this.zerotierProcess.killed) {
+                logger.debug('ZeroTier process still running, checking network status...');
+                const status = await this.getStatus();
+                if (status.online) {
+                    logger.info('ZeroTier reconnection successful');
+                    return;
+                }
+            }
+            
+            // If process died or not connected, restart it
+            logger.info('Restarting ZeroTier chroot setup...');
+            await this.cleanupChrootRouting();
+            await this.configureChrootBasedRouting();
+            
+        } catch (error) {
+            logger.error('Failed to reconnect ZeroTier:', error);
+            throw error;
+        }
+    }
 
     async cleanupChrootRouting() {
         try {
