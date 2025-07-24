@@ -399,15 +399,48 @@ class ZeroTierManager {
             await this.executeCommand(`ip route del default via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
             await this.executeCommand(`ip route del ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
             
-            // Enable DHCP client on batman interface
+            // Enable DHCP client on batman interface with retry loop
             // This will automatically configure IP, gateway, and routes
-            logger.info(`Enabling DHCP client on ${batmanInterface}`);
+            logger.info(`Enabling DHCP client on ${batmanInterface} with 5-minute retry period`);
             
             // Release any existing DHCP lease
             await this.executeCommand(`dhclient -r ${batmanInterface} 2>/dev/null || true`);
             
-            // Request new DHCP lease
-            await this.executeCommand(`dhclient ${batmanInterface}`);
+            // Retry dhclient over 5 minutes
+            const maxRetries = 25; // 25 attempts over 5 minutes
+            let dhcpSuccess = false;
+            
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    logger.info(`DHCP attempt ${attempt}/${maxRetries} - requesting IP from coordinator...`);
+                    
+                    // Try dhclient with timeout
+                    await this.executeCommand(`timeout 30s dhclient ${batmanInterface}`, { timeout: 35000 });
+                    
+                    // Check if we got an IP
+                    const currentIP = await this.checkForDHCPIP(batmanInterface);
+                    if (currentIP) {
+                        logger.info(`✅ DHCP successful on attempt ${attempt}: IP ${currentIP}`);
+                        dhcpSuccess = true;
+                        break;
+                    }
+                    
+                    logger.warn(`DHCP attempt ${attempt} failed - no IP assigned yet`);
+                    
+                } catch (error) {
+                    logger.warn(`DHCP attempt ${attempt} failed:`, error.message);
+                }
+                
+                if (attempt < maxRetries) {
+                    // Wait 12 seconds between attempts (25 attempts × 12s = 5 minutes)
+                    logger.debug(`Waiting 12 seconds before next DHCP attempt...`);
+                    await new Promise(resolve => setTimeout(resolve, 12000));
+                }
+            }
+            
+            if (!dhcpSuccess) {
+                throw new Error(`DHCP failed after ${maxRetries} attempts over 5 minutes`);
+            }
             
             // Wait for DHCP to assign an IP address
             const nodeIP = await this.waitForDHCPIP(batmanInterface);
@@ -433,6 +466,30 @@ class ZeroTierManager {
         } catch (error) {
             logger.error('Failed to configure node DHCP routing:', error);
             throw error;
+        }
+    }
+
+    async checkForDHCPIP(batmanInterface) {
+        try {
+            // Quick check if interface has an IP address
+            const ipOutput = await this.executeCommand(`ip addr show ${batmanInterface}`);
+            
+            // Look for inet address (IPv4)
+            const ipMatch = ipOutput.match(/inet (\d+\.\d+\.\d+\.\d+)\/\d+/);
+            
+            if (ipMatch) {
+                const assignedIP = ipMatch[1];
+                
+                // Make sure it's not a link-local address (169.254.x.x)
+                if (!assignedIP.startsWith('169.254.')) {
+                    return assignedIP;
+                }
+            }
+            
+            return null;
+            
+        } catch (error) {
+            return null;
         }
     }
 
