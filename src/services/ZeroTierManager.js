@@ -409,8 +409,9 @@ class ZeroTierManager {
             // Request new DHCP lease
             await this.executeCommand(`dhclient ${batmanInterface}`);
             
-            // Wait a moment for DHCP to configure the interface
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            // Wait for DHCP to assign an IP address
+            const nodeIP = await this.waitForDHCPIP(batmanInterface);
+            logger.info(`Node received IP via DHCP: ${nodeIP}`);
             
             // Verify DHCP configuration
             const routes = await this.executeCommand('ip route show');
@@ -433,6 +434,58 @@ class ZeroTierManager {
             logger.error('Failed to configure node DHCP routing:', error);
             throw error;
         }
+    }
+
+    async waitForDHCPIP(batmanInterface, maxAttempts = 30) {
+        logger.info(`Waiting for DHCP IP assignment on ${batmanInterface}...`);
+        
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                // Check if interface has an IP address
+                const ipOutput = await this.executeCommand(`ip addr show ${batmanInterface}`);
+                
+                // Look for inet address (IPv4)
+                const ipMatch = ipOutput.match(/inet (\d+\.\d+\.\d+\.\d+)\/\d+/);
+                
+                if (ipMatch) {
+                    const assignedIP = ipMatch[1];
+                    
+                    // Make sure it's not a link-local address (169.254.x.x)
+                    if (!assignedIP.startsWith('169.254.')) {
+                        logger.info(`✅ DHCP assigned IP: ${assignedIP} (attempt ${attempt})`);
+                        return assignedIP;
+                    }
+                }
+                
+                logger.debug(`⏳ Waiting for DHCP IP... attempt ${attempt}/${maxAttempts}`);
+                await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+                
+            } catch (error) {
+                logger.debug(`DHCP IP check failed on attempt ${attempt}:`, error.message);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+        
+        // If we get here, DHCP failed
+        const errorMsg = `Failed to get DHCP IP on ${batmanInterface} after ${maxAttempts} attempts`;
+        logger.error(errorMsg);
+        
+        // Try to get more diagnostic info
+        try {
+            const dhclientStatus = await this.executeCommand(`ps aux | grep dhclient | grep ${batmanInterface} || echo "No dhclient process found"`);
+            logger.debug('DHCP client status:', dhclientStatus);
+            
+            const interfaceStatus = await this.executeCommand(`ip link show ${batmanInterface}`);
+            logger.debug('Interface status:', interfaceStatus);
+            
+            const leaseInfo = await this.executeCommand(`cat /var/lib/dhcp/dhclient.${batmanInterface}.leases 2>/dev/null | tail -20 || echo "No lease file found"`);
+            logger.debug('DHCP lease info:', leaseInfo);
+            
+        } catch (debugError) {
+            logger.debug('Failed to get DHCP diagnostic info:', debugError.message);
+        }
+        
+        throw new Error(errorMsg);
     }
 
     extractNetworkFromIP(ipWithMask) {
