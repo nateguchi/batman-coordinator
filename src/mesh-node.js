@@ -105,11 +105,11 @@ class MeshNode {
     }
 
     async configureWirelessInterface() {
-        const interface = process.env.MESH_INTERFACE;
+        const meshInterface = process.env.MESH_INTERFACE;
         const ssid = process.env.MESH_SSID;
         const frequency = process.env.MESH_FREQUENCY;
         
-        logger.info(`Configuring ${interface} for ad-hoc mode...`);
+        logger.info(`Configuring ${meshInterface} for ad-hoc mode...`);
         
         try {
             // Kill any existing network managers that might interfere
@@ -117,21 +117,21 @@ class MeshNode {
             await this.networkManager.executeCommand('killall dhcpcd 2>/dev/null || true');
             
             // Set interface down
-            await this.networkManager.executeCommand(`ip link set ${interface} down`);
+            await this.networkManager.executeCommand(`ip link set ${meshInterface} down`);
             
             // Set to ad-hoc mode
-            await this.networkManager.executeCommand(`iw ${interface} set type ibss`);
+            await this.networkManager.executeCommand(`iw ${meshInterface} set type ibss`);
             
             // Bring interface up
-            await this.networkManager.executeCommand(`ip link set ${interface} up`);
+            await this.networkManager.executeCommand(`ip link set ${meshInterface} up`);
             
             // Join the ad-hoc network
-            await this.networkManager.executeCommand(`iw ${interface} ibss join ${ssid} ${frequency}`);
+            await this.networkManager.executeCommand(`iw ${meshInterface} ibss join ${ssid} ${frequency}`);
             
             // Wait a moment for the interface to stabilize
             await new Promise(resolve => setTimeout(resolve, 2000));
             
-            logger.info(`Wireless interface ${interface} configured for ad-hoc mode`);
+            logger.info(`Wireless interface ${meshInterface} configured for ad-hoc mode`);
             
         } catch (error) {
             logger.error('Failed to configure wireless interface:', error);
