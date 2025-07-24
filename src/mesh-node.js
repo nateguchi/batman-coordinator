@@ -368,9 +368,40 @@ class MeshNode {
             // Check batman-adv interface
             const batmanStatus = await this.networkManager.getBatmanStatus();
             if (!batmanStatus.active) {
-                logger.warn('Batman interface not active, attempting to restart...');
-                await this.networkManager.initializeBatman();
-                return; // Skip other checks if batman is down
+                logger.warn('Batman interface not active, checking if restart is needed...');
+                
+                // Additional checks before restarting - don't be too aggressive
+                try {
+                    // Check if the interface exists at all
+                    await this.networkManager.executeCommand(`ip link show ${this.networkManager.batmanInterface}`);
+                    
+                    // Check if we have any batman neighbors (indicates mesh is working)
+                    const neighbors = await this.networkManager.getBatmanNeighbors();
+                    if (neighbors.length > 0) {
+                        logger.info('Batman neighbors found, interface appears to be working despite status check');
+                        return; // Don't restart if we have neighbors
+                    }
+                    
+                    // If interface exists but no neighbors, try a gentle restart
+                    logger.info('No batman neighbors found, attempting gentle restart...');
+                    
+                    // Just try to bring the interface up instead of full restart
+                    await this.networkManager.executeCommand(`ip link set ${this.networkManager.batmanInterface} up`);
+                    
+                    // Wait a bit and check again
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    const newStatus = await this.networkManager.getBatmanStatus();
+                    if (!newStatus.active) {
+                        logger.warn('Gentle restart failed, performing full batman restart...');
+                        await this.networkManager.initializeBatman();
+                    }
+                    
+                } catch (error) {
+                    logger.error('Batman interface completely missing, performing full restart...');
+                    await this.networkManager.initializeBatman();
+                }
+                
+                return; // Skip other checks if batman was restarted
             }
             
             // Check mesh connectivity to coordinator

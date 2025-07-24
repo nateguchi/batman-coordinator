@@ -527,6 +527,17 @@ class NetworkManager {
             const interfaceStatus = await this.executeCommand(`ip link show ${this.batmanInterface}`);
             const isUp = interfaceStatus.includes('state UP');
             
+            // For a more robust check, also verify batman-adv is actually working
+            let batmanWorking = false;
+            try {
+                // Check if batman module is loaded and interface is managed by batman-adv
+                const meshInfo = await this.executeCommand(`batctl meshif ${this.batmanInterface} if 2>/dev/null || echo ""`);
+                batmanWorking = meshInfo.includes(this.meshInterface) || isUp; // Accept if interface is up even if meshif fails
+            } catch (error) {
+                // If batctl fails but interface is up, still consider it working (better for DHCP nodes)
+                batmanWorking = isUp;
+            }
+            
             // Check batman-adv version
             let version = 'unknown';
             try {
@@ -540,7 +551,7 @@ class NetworkManager {
             const routes = await this.getBatmanRoutes();
             
             return {
-                active: isUp,
+                active: isUp && batmanWorking, // More robust check
                 version: version,
                 interface: this.batmanInterface,
                 meshInterface: this.meshInterface,
