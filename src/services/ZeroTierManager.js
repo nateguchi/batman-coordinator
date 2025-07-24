@@ -118,15 +118,32 @@ class ZeroTierManager {
         try {
             logger.debug('Setting up ZeroTier chroot environment...');
             
-            // Create directory structure
-            await this.executeCommand(`mkdir -p ${chrootPath}/{bin,lib,lib64,usr/bin,usr/lib,var/lib/zerotier-one,proc,sys,dev,etc}`);
+            // Create directory structure explicitly
+            const dirs = [
+                'bin', 'lib', 'lib64', 'usr/bin', 'usr/sbin', 'usr/lib', 
+                'var/lib/zerotier-one', 'proc', 'sys', 'dev', 'etc'
+            ];
             
-            // Copy ZeroTier binaries
-            await this.executeCommand(`cp /usr/sbin/zerotier-one ${chrootPath}/usr/bin/`);
-            await this.executeCommand(`cp /usr/sbin/zerotier-cli ${chrootPath}/usr/bin/`);
+            for (const dir of dirs) {
+                await this.executeCommand(`mkdir -p ${chrootPath}/${dir}`);
+            }
+            
+            // Detect actual ZeroTier binary locations
+            let zerotierOnePath, zerotierCliPath;
+            try {
+                zerotierOnePath = await this.executeCommand('which zerotier-one');
+                zerotierCliPath = await this.executeCommand('which zerotier-cli');
+                logger.debug(`Found ZeroTier binaries: ${zerotierOnePath}, ${zerotierCliPath}`);
+            } catch (error) {
+                throw new Error('ZeroTier binaries not found in PATH');
+            }
+            
+            // Copy ZeroTier binaries from their actual locations
+            await this.executeCommand(`cp ${zerotierOnePath} ${chrootPath}/usr/bin/`);
+            await this.executeCommand(`cp ${zerotierCliPath} ${chrootPath}/usr/bin/`);
             
             // Copy required libraries
-            const libraries = await this.executeCommand('ldd /usr/sbin/zerotier-one | grep "=>" | awk \'{print $3}\'');
+            const libraries = await this.executeCommand(`ldd ${zerotierOnePath} | grep "=>" | awk '{print $3}'`);
             for (const lib of libraries.split('\n').filter(l => l.trim())) {
                 const libPath = lib.trim();
                 if (libPath && libPath !== 'null') {
@@ -224,11 +241,11 @@ class ZeroTierManager {
             await this.executeCommand(`mount -t sysfs sysfs ${chrootPath}/sys 2>/dev/null || true`);
             
             // Start ZeroTier as a subprocess in the namespace + chroot
-            const command = `ip netns exec ${nsName} chroot ${chrootPath} /usr/sbin/zerotier-one`;
+            const command = `ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-one`;
             logger.debug(`Starting ZeroTier subprocess: ${command}`);
             
             // Use spawn to run as background process
-            this.zerotierProcess = spawn('ip', ['netns', 'exec', nsName, 'chroot', chrootPath, '/usr/sbin/zerotier-one'], {
+            this.zerotierProcess = spawn('ip', ['netns', 'exec', nsName, 'chroot', chrootPath, '/usr/bin/zerotier-one'], {
                 detached: true,
                 stdio: ['ignore', 'ignore', 'ignore']
             });
@@ -253,7 +270,7 @@ class ZeroTierManager {
             // Join the ZeroTier network if specified
             if (this.networkId) {
                 logger.info(`Joining ZeroTier network ${this.networkId} in namespace...`);
-                await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/sbin/zerotier-cli join ${this.networkId}`);
+                await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli join ${this.networkId}`);
                 
                 // Wait for network to be ready
                 await this.waitForNamespacedZeroTierReady(nsName, chrootPath);
@@ -295,7 +312,7 @@ class ZeroTierManager {
     
     async getNamespacedNetworks(nsName, chrootPath) {
         try {
-            const output = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/sbin/zerotier-cli listnetworks`);
+            const output = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli listnetworks`);
             const networks = [];
             
             const lines = output.split('\n');
