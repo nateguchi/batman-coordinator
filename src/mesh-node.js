@@ -90,6 +90,14 @@ class MeshNode {
             // Initialize batman-adv
             await this.networkManager.initializeBatman();
             
+            // Get and log the assigned node IP
+            const nodeIP = await this.networkManager.getBatmanInterfaceIP();
+            if (nodeIP) {
+                logger.info(`Node assigned batman IP: ${nodeIP}`);
+            } else {
+                logger.warn('Could not determine node batman IP');
+            }
+            
             // Wait for batman mesh to stabilize
             logger.info('Waiting for batman mesh to stabilize...');
             await new Promise(resolve => setTimeout(resolve, 10000));

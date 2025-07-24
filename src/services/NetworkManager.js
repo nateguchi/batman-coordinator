@@ -27,6 +27,71 @@ class NetworkManager {
         }
     }
 
+    async generateNodeIP() {
+        try {
+            const os = require('os');
+            const crypto = require('crypto');
+            
+            // Get network interfaces to generate a unique identifier
+            const networkInterfaces = os.networkInterfaces();
+            let macAddress = '';
+            
+            // Find the first real MAC address (not loopback or virtual)
+            for (const [interfaceName, addresses] of Object.entries(networkInterfaces)) {
+                for (const addr of addresses) {
+                    if (!addr.internal && addr.mac && addr.mac !== '00:00:00:00:00:00') {
+                        macAddress = addr.mac;
+                        break;
+                    }
+                }
+                if (macAddress) break;
+            }
+            
+            if (!macAddress) {
+                // Fallback to hostname if no MAC address found
+                macAddress = os.hostname();
+            }
+            
+            // Create a hash from MAC address and use it to generate IP
+            const hash = crypto.createHash('md5').update(macAddress).digest('hex');
+            
+            // Convert first 2 bytes of hash to generate last octet (avoid .1 and .255)
+            const lastOctet = (parseInt(hash.substring(0, 2), 16) % 253) + 2; // Range: 2-254
+            
+            // Extract network from MESH_SUBNET (e.g., "192.168.100.0/24" -> "192.168.100")
+            const networkBase = this.meshSubnet.split('.').slice(0, 3).join('.');
+            const nodeIP = `${networkBase}.${lastOctet}`;
+            
+            // Check if this IP conflicts with the master IP
+            if (nodeIP === this.masterIp) {
+                // If conflict, use a different calculation
+                const altLastOctet = ((parseInt(hash.substring(2, 4), 16) % 253) + 2);
+                const altNodeIP = `${networkBase}.${altLastOctet}`;
+                
+                if (altNodeIP !== this.masterIp) {
+                    logger.debug(`Generated node IP: ${altNodeIP} (resolved conflict with master IP)`);
+                    return altNodeIP;
+                } else {
+                    // Last resort: use a sequential fallback
+                    const fallbackIP = `${networkBase}.10`; // Safe fallback
+                    logger.debug(`Generated node IP: ${fallbackIP} (fallback after conflicts)`);
+                    return fallbackIP;
+                }
+            }
+            
+            logger.debug(`Generated node IP: ${nodeIP} from MAC: ${macAddress}`);
+            return nodeIP;
+            
+        } catch (error) {
+            logger.error('Failed to generate node IP:', error);
+            // Fallback to a default node IP range
+            const networkBase = this.meshSubnet.split('.').slice(0, 3).join('.');
+            const fallbackIP = `${networkBase}.10`;
+            logger.warn(`Using fallback node IP: ${fallbackIP}`);
+            return fallbackIP;
+        }
+    }
+
     async waitForMeshInterface() {
         logger.info(`Waiting for mesh interface ${this.meshInterface} to be ready...`);
         
@@ -119,9 +184,16 @@ class NetworkManager {
             // Bring up batman interface
             await this.executeCommand(`ip link set up dev ${this.batmanInterface}`);
             
-            // Configure batman interface IP (only on coordinator)
+            // Configure batman interface IP
             if (process.env.NODE_ENV !== 'node') {
+                // Coordinator gets the master IP
                 await this.executeCommand(`ip addr add ${this.masterIp}/24 dev ${this.batmanInterface} 2>/dev/null || true`);
+                logger.info(`Assigned coordinator IP: ${this.masterIp}`);
+            } else {
+                // Mesh nodes get unique IPs based on their hardware
+                const nodeIP = await this.generateNodeIP();
+                await this.executeCommand(`ip addr add ${nodeIP}/24 dev ${this.batmanInterface} 2>/dev/null || true`);
+                logger.info(`Assigned node IP: ${nodeIP}`);
             }
             
             // Optimize batman-adv settings
@@ -259,6 +331,27 @@ class NetworkManager {
         } catch (error) {
             logger.error('Failed to setup gateway NAT:', error);
             throw error;
+        }
+    }
+
+    async getBatmanInterfaceIP() {
+        try {
+            const output = await this.executeCommand(`ip addr show ${this.batmanInterface}`);
+            
+            // Parse the IP address from the output
+            const ipMatch = output.match(/inet\s+(\d+\.\d+\.\d+\.\d+)\/\d+/);
+            if (ipMatch) {
+                const ip = ipMatch[1];
+                logger.debug(`Batman interface IP: ${ip}`);
+                return ip;
+            }
+            
+            logger.warn(`No IP address found for ${this.batmanInterface}`);
+            return null;
+            
+        } catch (error) {
+            logger.error('Failed to get batman interface IP:', error);
+            return null;
         }
     }
 

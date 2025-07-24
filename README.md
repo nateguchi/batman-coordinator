@@ -192,6 +192,43 @@ The SecurityManager provides targeted protection for the batman mesh network whi
 - All traffic routed through ZeroTier
 - No direct mesh communication (security)
 
+### IP Address Assignment
+
+The system automatically assigns unique IP addresses within the mesh network:
+
+#### Coordinator (Master Node)
+- **Fixed IP**: `192.168.100.1` (set by `MASTER_IP` environment variable)
+- **Role**: Gateway for all mesh nodes
+- **Batman Interface**: `bat0` with coordinator IP
+
+#### Mesh Nodes  
+- **Dynamic IP**: Automatically generated based on hardware MAC address
+- **Range**: `192.168.100.2` to `192.168.100.254` (avoids coordinator IP)
+- **Uniqueness**: Each node gets a consistent, unique IP based on its MAC address
+- **Batman Interface**: `bat0` with auto-assigned IP
+
+#### IP Generation Algorithm
+```javascript
+// Example: MAC aa:bb:cc:dd:ee:ff generates IP 192.168.100.171
+1. Extract hardware MAC address from primary network interface
+2. Create MD5 hash of MAC address
+3. Convert first 2 bytes of hash to decimal (0-255)
+4. Map to valid IP range (2-254, avoiding .1 and .255)
+5. Handle conflicts with coordinator IP automatically
+```
+
+#### Testing IP Assignment
+```bash
+# Test IP generation for current system
+node test-node-ip.js
+
+# Check current batman interface IP
+ip addr show bat0 | grep "inet "
+
+# View all mesh node IPs
+sudo batctl meshif bat0 neighbors
+```
+
 ## Troubleshooting
 
 ### NetworkManager Conflicts
