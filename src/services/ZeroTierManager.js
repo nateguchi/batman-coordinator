@@ -29,7 +29,7 @@ class ZeroTierManager {
 
     async initialize(config) {
         this.config = config;
-        this.networkId = config?.zerotier?.networkId;
+        this.networkId = config && config.zerotier && config.zerotier.networkId;
         
         if (!this.networkId) {
             logger.warn('No ZeroTier network ID configured - ZeroTier will not be initialized');
