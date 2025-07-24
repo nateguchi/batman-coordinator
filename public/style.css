@@ -278,6 +278,94 @@ body {
     gap: 8px;
 }
 
+/* Gateway Status */
+.gateway-status {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.gateway-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    border-left: 3px solid var(--secondary-color);
+}
+
+.gateway-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 500;
+    color: var(--text-color);
+}
+
+.gateway-label i {
+    color: var(--secondary-color);
+    width: 16px;
+}
+
+.gateway-value {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.status-badge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.status-badge.server {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.status-badge.client {
+    background-color: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #b8daff;
+}
+
+.status-badge.off {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.status-badge.unknown {
+    background-color: #e2e3e5;
+    color: #383d41;
+    border: 1px solid #d6d8db;
+}
+
+.count-badge {
+    background-color: var(--secondary-color);
+    color: white;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    min-width: 30px;
+    text-align: center;
+}
+
+.interface-name {
+    font-family: 'Courier New', monospace;
+    background-color: #e9ecef;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    border: 1px solid #dee2e6;
+}
+
 /* Nodes Summary */
 .nodes-summary {
     text-align: center;

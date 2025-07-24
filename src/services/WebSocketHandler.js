@@ -98,6 +98,21 @@ class WebSocketHandler {
             }
         });
 
+        // Request gateway status
+        socket.on('request-gateway-status', async () => {
+            try {
+                const gatewayStatus = await this.services.networkManager.getBatmanStatus();
+                socket.emit('gateway-status', {
+                    ...gatewayStatus,
+                    timestamp: new Date()
+                });
+                this.updateClientActivity(socket.id);
+            } catch (error) {
+                logger.error('Error sending gateway status:', error);
+                socket.emit('error', { message: 'Failed to get gateway status' });
+            }
+        });
+
         // Node actions
         socket.on('node-action', async (data) => {
             try {
@@ -162,12 +177,21 @@ class WebSocketHandler {
             const topology = await this.getNetworkTopology();
             socket.emit('topology-update', topology);
 
+            // Send gateway status
+            const gatewayStatus = await this.services.networkManager.getBatmanStatus();
+            socket.emit('gateway-status', {
+                ...gatewayStatus,
+                timestamp: new Date()
+            });
+
         } catch (error) {
             logger.error('Error sending initial data:', error);
         }
     }
 
     async getSystemStatus() {
+        const batmanStatus = await this.services.networkManager.getBatmanStatus();
+        
         return {
             coordinator: {
                 uptime: process.uptime(),
@@ -177,6 +201,7 @@ class WebSocketHandler {
                 timestamp: new Date()
             },
             network: this.services.networkManager.getStatus(),
+            batman: batmanStatus,
             zeroTier: this.services.zeroTierManager.getStatus(),
             summary: this.services.statsCollector.getSystemSummary()
         };
@@ -318,6 +343,16 @@ class WebSocketHandler {
     // Send performance updates to subscribed clients
     broadcastPerformanceUpdate(metrics) {
         this.io.to('performance').emit('performance-update', metrics);
+    }
+
+    // Send gateway status updates
+    broadcastGatewayStatus(gatewayStatus) {
+        this.io.emit('gateway-status', {
+            ...gatewayStatus,
+            timestamp: new Date()
+        });
+        
+        logger.debug('Gateway status broadcasted:', gatewayStatus);
     }
 
     // Send security alerts

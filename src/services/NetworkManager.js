@@ -180,10 +180,85 @@ class NetworkManager {
                 logger.warn('Failed to enable bridge loop avoidance:', error.message);
             }
             
+            // Configure gateway mode if this is the coordinator
+            if (process.env.NODE_ENV !== 'node') {
+                try {
+                    await this.setupBatmanGateway();
+                } catch (error) {
+                    logger.warn('Failed to setup batman gateway:', error.message);
+                }
+            }
+            
             logger.info('Batman-adv settings optimized');
             
         } catch (error) {
             logger.warn('Failed to optimize batman settings:', error);
+        }
+    }
+
+    async setupBatmanGateway() {
+        logger.info('Configuring batman-adv gateway mode...');
+        
+        try {
+            // Set gateway mode to server (announces this node as gateway)
+            await this.executeCommand(`batctl meshif ${this.batmanInterface} gw_mode server`);
+            logger.debug('Set batman gateway mode to server');
+            
+            // Configure gateway bandwidth (optional - helps with gateway selection)
+            const gwBandwidth = process.env.BATMAN_GW_BANDWIDTH || '10000/2000'; // 10Mbps down / 2Mbps up
+            try {
+                await this.executeCommand(`batctl meshif ${this.batmanInterface} gw_mode server ${gwBandwidth}`);
+                logger.debug(`Set gateway bandwidth to ${gwBandwidth}`);
+            } catch (error) {
+                logger.debug('Failed to set gateway bandwidth (using default)');
+            }
+            
+            // Enable IP forwarding for routing between mesh and internet
+            await this.executeCommand('echo 1 > /proc/sys/net/ipv4/ip_forward');
+            logger.debug('Enabled IP forwarding');
+            
+            // Setup NAT/masquerading for internet access
+            await this.setupGatewayNAT();
+            
+            logger.info('Batman gateway configured successfully');
+            
+        } catch (error) {
+            logger.error('Failed to setup batman gateway:', error);
+            throw error;
+        }
+    }
+
+    async setupGatewayNAT() {
+        const ethernetInterface = process.env.ETHERNET_INTERFACE || 'eth0';
+        
+        try {
+            // Clear any existing NAT rules for batman interface
+            await this.executeCommand(`iptables -t nat -D POSTROUTING -s ${this.meshSubnet} -o ${ethernetInterface} -j MASQUERADE 2>/dev/null || true`);
+            
+            // Add NAT rule for mesh traffic going to internet
+            await this.executeCommand(`iptables -t nat -A POSTROUTING -s ${this.meshSubnet} -o ${ethernetInterface} -j MASQUERADE`);
+            logger.debug(`Added NAT rule for ${this.meshSubnet} via ${ethernetInterface}`);
+            
+            // Allow forwarding between batman interface and ethernet
+            await this.executeCommand(`iptables -D FORWARD -i ${this.batmanInterface} -o ${ethernetInterface} -j ACCEPT 2>/dev/null || true`);
+            await this.executeCommand(`iptables -D FORWARD -i ${ethernetInterface} -o ${this.batmanInterface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true`);
+            
+            await this.executeCommand(`iptables -A FORWARD -i ${this.batmanInterface} -o ${ethernetInterface} -j ACCEPT`);
+            await this.executeCommand(`iptables -A FORWARD -i ${ethernetInterface} -o ${this.batmanInterface} -m state --state RELATED,ESTABLISHED -j ACCEPT`);
+            logger.debug(`Added forwarding rules between ${this.batmanInterface} and ${ethernetInterface}`);
+            
+            // Setup default route for mesh subnet (optional - helps mesh nodes find gateway)
+            try {
+                await this.executeCommand(`ip route add ${this.meshSubnet} dev ${this.batmanInterface} 2>/dev/null || true`);
+            } catch (error) {
+                // Route might already exist
+            }
+            
+            logger.info('Gateway NAT configured successfully');
+            
+        } catch (error) {
+            logger.error('Failed to setup gateway NAT:', error);
+            throw error;
         }
     }
 
@@ -305,7 +380,8 @@ class NetworkManager {
                 neighborCount: neighbors.length,
                 routeCount: routes.length,
                 neighbors: neighbors,
-                routes: routes
+                routes: routes,
+                gatewayMode: await this.getGatewayMode()
             };
             
         } catch (error) {
@@ -314,6 +390,21 @@ class NetworkManager {
                 active: false,
                 error: error.message
             };
+        }
+    }
+
+    async getGatewayMode() {
+        try {
+            const output = await this.executeCommand(`batctl meshif ${this.batmanInterface} gw_mode`);
+            return output.trim();
+        } catch (error) {
+            try {
+                // Try old syntax
+                const output = await this.executeCommand(`batctl gw_mode`);
+                return output.trim();
+            } catch (error2) {
+                return 'unknown';
+            }
         }
     }
 
@@ -415,6 +506,11 @@ class NetworkManager {
         logger.info('Cleaning up network configuration...');
         
         try {
+            // Clean up gateway NAT rules if this was a coordinator
+            if (process.env.NODE_ENV !== 'node') {
+                await this.cleanupGatewayNAT();
+            }
+            
             // Remove batman interface (use new syntax)
             await this.executeCommand(`batctl meshif ${this.batmanInterface} interface del ${this.meshInterface} 2>/dev/null || true`);
             await this.executeCommand(`ip link set down dev ${this.batmanInterface} 2>/dev/null || true`);
@@ -427,6 +523,24 @@ class NetworkManager {
             
         } catch (error) {
             logger.error('Error during network cleanup:', error);
+        }
+    }
+
+    async cleanupGatewayNAT() {
+        const ethernetInterface = process.env.ETHERNET_INTERFACE || 'eth0';
+        
+        try {
+            // Remove NAT rules
+            await this.executeCommand(`iptables -t nat -D POSTROUTING -s ${this.meshSubnet} -o ${ethernetInterface} -j MASQUERADE 2>/dev/null || true`);
+            
+            // Remove forwarding rules
+            await this.executeCommand(`iptables -D FORWARD -i ${this.batmanInterface} -o ${ethernetInterface} -j ACCEPT 2>/dev/null || true`);
+            await this.executeCommand(`iptables -D FORWARD -i ${ethernetInterface} -o ${this.batmanInterface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true`);
+            
+            logger.debug('Gateway NAT rules cleaned up');
+            
+        } catch (error) {
+            logger.warn('Error cleaning up gateway NAT rules:', error.message);
         }
     }
 }

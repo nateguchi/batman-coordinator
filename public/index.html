@@ -105,6 +105,53 @@
                         </div>
                     </div>
 
+                    <!-- Gateway Status Card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-router"></i> Gateway Status</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="gateway-status">
+                                <div class="gateway-item">
+                                    <div class="gateway-label">
+                                        <i class="fas fa-door-open"></i>
+                                        Gateway Mode
+                                    </div>
+                                    <div class="gateway-value" id="gatewayMode">
+                                        <span class="status-badge" id="gatewayModeStatus">Unknown</span>
+                                    </div>
+                                </div>
+                                <div class="gateway-item">
+                                    <div class="gateway-label">
+                                        <i class="fas fa-users"></i>
+                                        Mesh Neighbors
+                                    </div>
+                                    <div class="gateway-value" id="meshNeighbors">
+                                        <span class="count-badge" id="neighborCount">0</span>
+                                    </div>
+                                </div>
+                                <div class="gateway-item">
+                                    <div class="gateway-label">
+                                        <i class="fas fa-route"></i>
+                                        Mesh Routes
+                                    </div>
+                                    <div class="gateway-value" id="meshRoutes">
+                                        <span class="count-badge" id="routeCount">0</span>
+                                    </div>
+                                </div>
+                                <div class="gateway-item">
+                                    <div class="gateway-label">
+                                        <i class="fas fa-ethernet"></i>
+                                        Interface
+                                    </div>
+                                    <div class="gateway-value" id="batmanInterface">
+                                        <span class="interface-name" id="interfaceName">bat0</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Mesh Nodes Card -->
                     <div class="card">
                         <div class="card-header">

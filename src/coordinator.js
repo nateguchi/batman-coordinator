@@ -80,16 +80,25 @@ class Coordinator {
 
     setupRoutes() {
         // API Routes
-        this.app.get('/api/status', (req, res) => {
-            res.json({
-                coordinator: {
-                    uptime: process.uptime(),
-                    nodeCount: this.nodes.size,
-                    isRunning: this.isRunning
-                },
-                network: this.networkManager.getStatus(),
-                zeroTier: this.zeroTierManager.getStatus()
-            });
+        this.app.get('/api/status', async (req, res) => {
+            try {
+                const batmanStatus = await this.networkManager.getBatmanStatus();
+                const zeroTierStatus = await this.zeroTierManager.getStatus();
+                
+                res.json({
+                    coordinator: {
+                        uptime: process.uptime(),
+                        nodeCount: this.nodes.size,
+                        isRunning: this.isRunning
+                    },
+                    network: this.networkManager.getStatus(),
+                    batman: batmanStatus,
+                    zeroTier: zeroTierStatus
+                });
+            } catch (error) {
+                logger.error('Failed to get status:', error);
+                res.status(500).json({ error: 'Failed to get status' });
+            }
         });
 
         this.app.get('/api/nodes', (req, res) => {
@@ -346,6 +355,16 @@ class Coordinator {
                 await this.securityManager.monitorSecurity();
             } catch (error) {
                 logger.error('Error in security monitoring:', error);
+            }
+        });
+
+        // Gateway status monitoring
+        cron.schedule('*/15 * * * * *', async () => {
+            try {
+                const gatewayStatus = await this.networkManager.getBatmanStatus();
+                this.wsHandler.broadcastGatewayStatus(gatewayStatus);
+            } catch (error) {
+                logger.error('Error monitoring gateway status:', error);
             }
         });
     }

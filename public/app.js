@@ -56,6 +56,10 @@ class BatmanCoordinator {
                 this.updateTopology(data);
             });
 
+            this.socket.on('gateway-status', (data) => {
+                this.updateGatewayStatus(data);
+            });
+
             this.socket.on('alert', (data) => {
                 this.showAlert(data);
             });
@@ -82,6 +86,7 @@ class BatmanCoordinator {
         this.socket.emit('request-nodes');
         this.socket.emit('request-stats');
         this.socket.emit('request-topology');
+        this.socket.emit('request-gateway-status');
     }
 
     // Event Listeners
@@ -108,6 +113,7 @@ class BatmanCoordinator {
             if (this.isConnected) {
                 this.socket.emit('request-status');
                 this.socket.emit('request-stats');
+                this.socket.emit('request-gateway-status');
             }
         }, 5000); // Every 5 seconds
     }
@@ -191,6 +197,52 @@ class BatmanCoordinator {
 
         if (data.summary?.zerotier) {
             this.updateNetworkStatus('zeroTierStatus', data.summary.zerotier.online);
+        }
+
+        // Update gateway status
+        if (data.batman) {
+            this.updateGatewayStatus(data.batman);
+        }
+    }
+
+    updateGatewayStatus(batmanData) {
+        if (!batmanData) return;
+
+        // Update gateway mode
+        const gatewayModeElement = document.getElementById('gatewayModeStatus');
+        if (gatewayModeElement && batmanData.gatewayMode) {
+            const mode = batmanData.gatewayMode.toLowerCase();
+            gatewayModeElement.textContent = batmanData.gatewayMode;
+            
+            // Update badge styling based on mode
+            gatewayModeElement.className = 'status-badge';
+            if (mode.includes('server')) {
+                gatewayModeElement.classList.add('server');
+            } else if (mode.includes('client')) {
+                gatewayModeElement.classList.add('client');
+            } else if (mode.includes('off')) {
+                gatewayModeElement.classList.add('off');
+            } else {
+                gatewayModeElement.classList.add('unknown');
+            }
+        }
+
+        // Update neighbor count
+        const neighborCountElement = document.getElementById('neighborCount');
+        if (neighborCountElement) {
+            neighborCountElement.textContent = batmanData.neighborCount || 0;
+        }
+
+        // Update route count
+        const routeCountElement = document.getElementById('routeCount');
+        if (routeCountElement) {
+            routeCountElement.textContent = batmanData.routeCount || 0;
+        }
+
+        // Update interface name
+        const interfaceNameElement = document.getElementById('interfaceName');
+        if (interfaceNameElement) {
+            interfaceNameElement.textContent = batmanData.interface || 'bat0';
         }
     }
 
