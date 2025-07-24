@@ -111,16 +111,15 @@ class MeshNode {
                 
                 // Now try to setup ZeroTier through the mesh
                 try {
-                    await this.zeroTierManager.initialize();
+                    await this.zeroTierManager.initialize(this.config);
+                    logger.info('✅ ZeroTier chroot isolation setup complete');
                     
-                    // Configure ZeroTier process-based routing to tunnel through batman mesh
-                    logger.info('Configuring ZeroTier tunnel traffic to route through batman mesh...');
-                    await this.zeroTierManager.configureProcessBasedRouting('bat0');
+                    this.zerotierConnected = true;
                     
                     await this.waitForZeroTierConnection();
-                    logger.info('ZeroTier connected through mesh');
+                    logger.info('ZeroTier connected through mesh via chroot isolation');
                 } catch (error) {
-                    logger.warn('ZeroTier failed to connect through mesh, continuing without it:', error.message);
+                    logger.warn('ZeroTier chroot setup failed, continuing without it:', error.message);
                     // Continue without ZeroTier - mesh nodes can work without external connectivity
                 }
             } else {
@@ -468,9 +467,8 @@ class MeshNode {
                         logger.debug('ZeroTier reconnect failed:', error.message);
                         // Try to initialize ZeroTier if it's not running
                         try {
-                            await this.zeroTierManager.initialize();
-                            // Configure routing after initialization
-                            await this.zeroTierManager.configureRoutingForMesh(false);
+                            await this.zeroTierManager.initialize(this.config);
+                            logger.info('✅ ZeroTier reconnected with chroot isolation');
                         } catch (initError) {
                             logger.debug('ZeroTier initialization failed:', initError.message);
                         }
@@ -577,12 +575,12 @@ class MeshNode {
                 await this.heartbeat.stop();
             }
             
-            // Cleanup ZeroTier routing (both old process-based and new gateway routing)
+            // Cleanup ZeroTier chroot configuration
             try {
-                await this.zeroTierManager.cleanupProcessBasedRouting();
-                await this.zeroTierManager.cleanupGatewayRouting(false); // false = node cleanup
+                logger.info('Cleaning up ZeroTier chroot configuration...');
+                await this.zeroTierManager.cleanupChrootRouting();
             } catch (error) {
-                logger.warn('Failed to cleanup ZeroTier routing:', error.message);
+                logger.warn('Failed to cleanup ZeroTier chroot:', error.message);
             }
             
             // Cleanup network configuration
