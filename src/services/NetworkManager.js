@@ -144,7 +144,7 @@ class NetworkManager {
             return neighbors;
             
         } catch (error) {
-            logger.error('Failed to get batman neighbors:', error);
+            logger.warn('Could not retrieve batman neighbors (may be normal if no other nodes):', error.message);
             return [];
         }
     }
@@ -191,7 +191,7 @@ class NetworkManager {
             return routes;
             
         } catch (error) {
-            logger.error('Failed to get batman routes:', error);
+            logger.warn('Could not retrieve batman originators (may be normal if no other nodes):', error.message);
             return [];
         }
     }
