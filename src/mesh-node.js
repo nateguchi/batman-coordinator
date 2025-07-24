@@ -90,11 +90,28 @@ class MeshNode {
             // Initialize batman-adv
             await this.networkManager.initializeBatman();
             
-            // Setup ZeroTier
-            await this.zeroTierManager.initialize();
+            // Wait for batman mesh to stabilize
+            logger.info('Waiting for batman mesh to stabilize...');
+            await new Promise(resolve => setTimeout(resolve, 10000));
             
-            // Wait for ZeroTier to connect
-            await this.waitForZeroTierConnection();
+            // Check if we can reach the coordinator through the mesh
+            const canReachCoordinator = await this.testMeshConnectivity();
+            if (canReachCoordinator) {
+                logger.info('Mesh connectivity established to coordinator');
+                
+                // Now try to setup ZeroTier through the mesh
+                try {
+                    await this.zeroTierManager.initialize();
+                    await this.waitForZeroTierConnection();
+                    logger.info('ZeroTier connected through mesh');
+                } catch (error) {
+                    logger.warn('ZeroTier failed to connect through mesh, continuing without it:', error.message);
+                    // Continue without ZeroTier - mesh nodes can work without external connectivity
+                }
+            } else {
+                logger.warn('No mesh connectivity to coordinator yet, skipping ZeroTier for now');
+                // ZeroTier will be retried in the monitoring loop
+            }
             
             logger.info('Network configuration complete');
             
@@ -227,10 +244,10 @@ class MeshNode {
     }
 
     async waitForZeroTierConnection() {
-        const maxAttempts = 30; // 30 seconds
+        const maxAttempts = 15; // Reduced from 30 to 15 seconds
         let attempts = 0;
         
-        logger.info('Waiting for ZeroTier connection...');
+        logger.info('Waiting for ZeroTier connection through mesh...');
         
         while (attempts < maxAttempts) {
             try {
@@ -244,13 +261,39 @@ class MeshNode {
                 }
             } catch (error) {
                 // Continue trying
+                logger.debug(`ZeroTier connection attempt ${attempts + 1}/${maxAttempts} failed:`, error.message);
             }
             
             attempts++;
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
-        throw new Error('ZeroTier connection timeout');
+        throw new Error('ZeroTier connection timeout (mesh node can continue without external connectivity)');
+    }
+
+    async testMeshConnectivity() {
+        try {
+            const coordinatorIp = process.env.MASTER_IP || '192.168.100.1';
+            logger.debug(`Testing mesh connectivity to coordinator at ${coordinatorIp}`);
+            
+            const ping = require('ping');
+            const result = await ping.promise.probe(coordinatorIp, {
+                timeout: 5000,
+                min_reply: 1,
+                extra: ['-c', '3'] // Send 3 pings
+            });
+            
+            if (result.alive) {
+                logger.info(`Mesh connectivity confirmed: ping to ${coordinatorIp} successful`);
+                return true;
+            } else {
+                logger.debug(`No mesh connectivity: ping to ${coordinatorIp} failed`);
+                return false;
+            }
+        } catch (error) {
+            logger.debug('Mesh connectivity test failed:', error.message);
+            return false;
+        }
     }
 
     async setupSecurity() {
@@ -316,19 +359,47 @@ class MeshNode {
             if (!batmanStatus.active) {
                 logger.warn('Batman interface not active, attempting to restart...');
                 await this.networkManager.initializeBatman();
+                return; // Skip other checks if batman is down
             }
             
-            // Check ZeroTier connectivity
-            const zeroTierStatus = await this.zeroTierManager.getStatus();
-            if (!zeroTierStatus.online) {
-                logger.warn('ZeroTier not online, checking connection...');
-                await this.zeroTierManager.reconnect();
+            // Check mesh connectivity to coordinator
+            const meshConnected = await this.testMeshConnectivity();
+            if (!meshConnected) {
+                logger.warn('No mesh connectivity to coordinator');
+                return; // Skip ZeroTier checks if mesh is down
             }
             
-            // Test internet connectivity through ZeroTier
-            const canReachInternet = await this.testInternetConnectivity();
-            if (!canReachInternet) {
-                logger.warn('No internet connectivity through ZeroTier');
+            // Check ZeroTier connectivity (only if mesh is working)
+            try {
+                const zeroTierStatus = await this.zeroTierManager.getStatus();
+                if (!zeroTierStatus.online) {
+                    logger.debug('ZeroTier not online, attempting to reconnect through mesh...');
+                    try {
+                        await this.zeroTierManager.reconnect();
+                    } catch (error) {
+                        logger.debug('ZeroTier reconnect failed:', error.message);
+                        // Try to initialize ZeroTier if it's not running
+                        try {
+                            await this.zeroTierManager.initialize();
+                        } catch (initError) {
+                            logger.debug('ZeroTier initialization failed:', initError.message);
+                        }
+                    }
+                }
+            } catch (error) {
+                // ZeroTier might not be available yet, that's okay for mesh nodes
+                logger.debug('ZeroTier check failed (may be normal for mesh nodes):', error.message);
+            }
+            
+            // Test internet connectivity through ZeroTier (optional)
+            try {
+                const canReachInternet = await this.testInternetConnectivity();
+                if (!canReachInternet) {
+                    logger.debug('No internet connectivity through ZeroTier (mesh node may not need it)');
+                }
+            } catch (error) {
+                // Internet connectivity is optional for mesh nodes
+                logger.debug('Internet connectivity test failed:', error.message);
             }
             
         } catch (error) {
