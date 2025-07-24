@@ -1,6 +1,8 @@
 const path = require('path');
 require('dotenv').config();
 
+process.env.NODE_ENV = 'node';
+
 const logger = require('./utils/logger');
 const NetworkManager = require('./services/NetworkManager');
 const ZeroTierManager = require('./services/ZeroTierManager');
