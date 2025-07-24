@@ -109,13 +109,9 @@ class MeshNode {
             logger.info('Waiting for batman mesh network to establish...');
             await this.waitForBatmanMeshReady();
             
-            // Request IP assignment via DHCP from coordinator
-            logger.info('Setting up batman gateway client for DHCP...');
-            await this.networkManager.setupBatmanGatewayClient();
-            
-            // Get the assigned IP for logging
-            const nodeIP = await this.networkManager.getBatmanInterfaceIP();
-            logger.info(`Node assigned batman IP: ${nodeIP}`);
+            // Request IP assignment via DHCP from coordinator with retry logic
+            const batmanInterface = 'bat0';
+            await this.configureDHCPWithRetry(batmanInterface);
             
             // Test mesh connectivity to coordinator
             const canReachCoordinator = await this.testMeshConnectivity();
@@ -332,6 +328,109 @@ class MeshNode {
         // If we get here, no neighbors were found but continue anyway
         logger.warn(`Batman mesh not ready after ${maxAttempts} attempts, continuing anyway...`);
         logger.warn('DHCP may fail if coordinator is not reachable through mesh');
+    }
+
+    async configureDHCPWithRetry(batmanInterface) {
+        try {
+            // Enable DHCP client on batman interface with retry loop
+            // This will automatically configure IP, gateway, and routes
+            logger.info(`Enabling DHCP client on ${batmanInterface} with 5-minute retry period`);
+            
+            // Release any existing DHCP lease
+            await this.networkManager.executeCommand(`dhclient -r ${batmanInterface} 2>/dev/null || true`);
+            
+            // Retry dhclient over 5 minutes
+            const maxRetries = 25; // 25 attempts over 5 minutes
+            let dhcpSuccess = false;
+            
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    logger.info(`DHCP attempt ${attempt}/${maxRetries} - requesting IP from coordinator...`);
+                    
+                    // Try dhclient with timeout (fallback if timeout command not available)
+                    try {
+                        await this.networkManager.executeCommand(`timeout 30s dhclient ${batmanInterface}`, { timeout: 35000 });
+                    } catch (timeoutError) {
+                        // Fallback if timeout command not available
+                        logger.debug('timeout command not available, using dhclient without timeout');
+                        await this.networkManager.executeCommand(`dhclient ${batmanInterface}`, { timeout: 35000 });
+                    }
+                    
+                    // Check if we got an IP
+                    const currentIP = await this.checkForDHCPIP(batmanInterface);
+                    if (currentIP) {
+                        logger.info(`✅ DHCP successful on attempt ${attempt}: IP ${currentIP}`);
+                        dhcpSuccess = true;
+                        break;
+                    }
+                    
+                    logger.warn(`DHCP attempt ${attempt} failed - no IP assigned yet`);
+                    
+                } catch (error) {
+                    logger.warn(`DHCP attempt ${attempt} failed:`, error.message);
+                }
+                
+                if (attempt < maxRetries) {
+                    // Wait 12 seconds between attempts (25 attempts × 12s = 5 minutes)
+                    logger.debug(`Waiting 12 seconds before next DHCP attempt...`);
+                    await new Promise(resolve => setTimeout(resolve, 12000));
+                }
+            }
+            
+            if (!dhcpSuccess) {
+                throw new Error(`DHCP failed after ${maxRetries} attempts over 5 minutes`);
+            }
+            
+            // Wait for DHCP to assign an IP address
+            const nodeIP = await this.waitForDHCPIP(batmanInterface);
+            logger.info(`Node received IP via DHCP: ${nodeIP}`);
+            
+        } catch (error) {
+            logger.error('Failed to configure DHCP:', error);
+            throw error;
+        }
+    }
+
+    async checkForDHCPIP(batmanInterface) {
+        try {
+            const ipInfo = await this.networkManager.executeCommand(`ip addr show ${batmanInterface}`);
+            
+            // Look for inet address (IPv4)
+            const ipMatch = ipInfo.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
+            if (ipMatch) {
+                return ipMatch[1];
+            }
+            
+            return null;
+            
+        } catch (error) {
+            logger.debug('Failed to check for DHCP IP:', error.message);
+            return null;
+        }
+    }
+
+    async waitForDHCPIP(batmanInterface, maxAttempts = 30) {
+        logger.info(`Waiting for DHCP IP on ${batmanInterface}...`);
+        
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                const ip = await this.checkForDHCPIP(batmanInterface);
+                if (ip) {
+                    logger.info(`✅ Got DHCP IP: ${ip} on ${batmanInterface}`);
+                    return ip;
+                }
+                
+            } catch (error) {
+                logger.debug(`DHCP IP check failed on attempt ${attempt}:`, error.message);
+            }
+            
+            if (attempt < maxAttempts) {
+                logger.debug(`⏳ No IP yet on ${batmanInterface}, attempt ${attempt}/${maxAttempts}, waiting...`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+        
+        throw new Error(`DHCP IP timeout on ${batmanInterface} after ${maxAttempts} attempts`);
     }
 
     async testMeshConnectivity() {
