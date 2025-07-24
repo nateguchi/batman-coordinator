@@ -345,13 +345,13 @@ class MeshNode {
 
     startMonitoring() {
         // Monitor network connectivity
-        setInterval(async () => {
-            try {
-                await this.checkConnectivity();
-            } catch (error) {
-                logger.error('Connectivity check failed:', error);
-            }
-        }, parseInt(process.env.NODE_CHECK_INTERVAL) || 30000);
+        // setInterval(async () => {
+        //     try {
+        //         await this.checkConnectivity();
+        //     } catch (error) {
+        //         logger.error('Connectivity check failed:', error);
+        //     }
+        // }, parseInt(process.env.NODE_CHECK_INTERVAL) || 30000);
 
         // Monitor system health
         setInterval(async () => {
