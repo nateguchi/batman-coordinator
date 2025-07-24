@@ -525,7 +525,7 @@ class NetworkManager {
         try {
             // Check if batman interface exists and is up
             const interfaceStatus = await this.executeCommand(`ip link show ${this.batmanInterface}`);
-            const isUp = interfaceStatus.includes('state UP');
+            const isUp = interfaceStatus.includes('UP');
             
             // For a more robust check, also verify batman-adv is actually working
             let batmanWorking = false;
