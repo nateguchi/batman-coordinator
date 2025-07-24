@@ -109,10 +109,10 @@ class NetworkManager {
             // Try new meshif command format first, fallback to old format
             let output;
             try {
-                output = await this.executeCommand(`batctl meshif ${this.batmanInterface} neighbors`);
+                output = await this.executeCommand(`batctl ${this.batmanInterface} neighbors`);
             } catch (error) {
                 try {
-                    output = await this.executeCommand(`batctl meshif ${this.batmanInterface} n`);
+                    output = await this.executeCommand(`batctl ${this.batmanInterface} n`);
                 } catch (error2) {
                     try {
                         // Try old format without meshif
@@ -155,10 +155,10 @@ class NetworkManager {
             let output;
             try {
                 // Try new meshif command format for originators
-                output = await this.executeCommand(`batctl meshif ${this.batmanInterface} originators`);
+                output = await this.executeCommand(`batctl ${this.batmanInterface} originators`);
             } catch (error) {
                 try {
-                    output = await this.executeCommand(`batctl meshif ${this.batmanInterface} o`);
+                    output = await this.executeCommand(`batctl ${this.batmanInterface} o`);
                 } catch (error2) {
                     try {
                         // Try old format without meshif
