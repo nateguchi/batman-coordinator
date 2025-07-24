@@ -175,15 +175,17 @@ class ZeroTierManager {
             
             const lines = output.split('\n');
             for (const line of lines) {
-                if (line.length > 0 && !line.startsWith('200')) {
+                if (line.length > 0 && line.startsWith('200 listnetworks') && !line.includes('<nwid>')) {
                     const parts = line.trim().split(/\s+/);
-                    if (parts.length >= 6) {
+                    if (parts.length >= 7) {
                         networks.push({
-                            id: parts[2],
-                            name: parts[3] || '',
-                            status: parts[5],
-                            type: parts[4],
-                            assignedAddresses: parts.slice(8) || []
+                            id: parts[2],           // Network ID
+                            name: parts[3] || '',   // Network name
+                            mac: parts[4] || '',    // MAC address
+                            status: parts[5],       // Status (OK, etc.)
+                            type: parts[6],         // Type (PRIVATE/PUBLIC)
+                            interface: parts[7] || '', // Interface name (ztuga3ckpj)
+                            assignedAddresses: parts.slice(8) || [] // IP addresses
                         });
                     }
                 }
@@ -204,15 +206,15 @@ class ZeroTierManager {
             
             const lines = output.split('\n');
             for (const line of lines) {
-                if (line.length > 0 && !line.startsWith('200')) {
+                if (line.length > 0 && line.startsWith('200 peers') && !line.includes('<ztaddr>')) {
                     const parts = line.trim().split(/\s+/);
-                    if (parts.length >= 5) {
+                    if (parts.length >= 6) {
                         peers.push({
-                            address: parts[0],
-                            version: parts[1],
-                            latency: parts[2],
-                            role: parts[3],
-                            paths: parts.slice(4)
+                            address: parts[2],      // ZT address
+                            version: parts[3],      // Version
+                            latency: parts[4],      // Latency
+                            role: parts[5],         // Role (PLANET, LEAF, etc.)
+                            paths: parts.slice(6)   // Connection paths
                         });
                     }
                 }
@@ -228,7 +230,13 @@ class ZeroTierManager {
 
     async getZeroTierInterface() {
         try {
-            // Get ZeroTier interfaces
+            // First try to get from network list (more reliable)
+            const networks = await this.getNetworks();
+            if (networks.length > 0 && networks[0].interface) {
+                return networks[0].interface;
+            }
+            
+            // Fallback to parsing ip link output
             const interfaces = await this.executeCommand('ip link show | grep zt');
             const lines = interfaces.split('\n');
             
