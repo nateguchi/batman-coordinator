@@ -197,7 +197,13 @@ class ZeroTierManager {
             
             // Get batman interface IP and network
             const batmanGateway = await this.executeCommand(`ip route show dev ${batmanInterface} | grep 'proto kernel' | awk '{print $1}' | head -1 || echo "192.168.100.0/24"`);
-            const batmanGatewayIP = await this.executeCommand(`ip addr show ${batmanInterface} | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 || echo "192.168.100.1"`);
+            const batmanGatewayIPRaw = await this.executeCommand(`ip addr show ${batmanInterface} | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1 || echo "192.168.100.1"`);
+            const batmanGatewayIP = batmanGatewayIPRaw.split('\n')[0].trim(); // Take only the first IP address
+            
+            // Validate IP address format
+            if (!batmanGatewayIP || !batmanGatewayIP.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+                throw new Error(`Invalid batman gateway IP: ${batmanGatewayIP}`);
+            }
             
             logger.debug(`Batman network: ${batmanGateway}, Batman IP: ${batmanGatewayIP}`);
             
