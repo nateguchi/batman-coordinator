@@ -27,6 +27,26 @@ class NetworkManager {
         }
     }
 
+    async getBatmanVersion() {
+        try {
+            // Try different version commands
+            let version;
+            try {
+                version = await this.executeCommand('batctl -v');
+            } catch (error) {
+                try {
+                    version = await this.executeCommand('batctl version');
+                } catch (error2) {
+                    version = 'unknown';
+                }
+            }
+            return version;
+        } catch (error) {
+            logger.error('Failed to get batman version:', error);
+            return 'unknown';
+        }
+    }
+
     async initializeBatman() {
         logger.info('Initializing batman-adv...');
         
@@ -86,7 +106,19 @@ class NetworkManager {
 
     async getBatmanNeighbors() {
         try {
-            const output = await this.executeCommand('batctl n');
+            // Try new command format first, fallback to old format
+            let output;
+            try {
+                output = await this.executeCommand('batctl neighbors');
+            } catch (error) {
+                try {
+                    output = await this.executeCommand('batctl n');
+                } catch (error2) {
+                    // Try originators table as alternative
+                    output = await this.executeCommand('batctl originators');
+                }
+            }
+            
             const neighbors = [];
             
             const lines = output.split('\n');
@@ -114,7 +146,19 @@ class NetworkManager {
 
     async getBatmanRoutes() {
         try {
-            const output = await this.executeCommand('batctl rt');
+            // Try new command format first, fallback to old format
+            let output;
+            try {
+                output = await this.executeCommand('batctl routes');
+            } catch (error) {
+                try {
+                    output = await this.executeCommand('batctl r');
+                } catch (error2) {
+                    // Try old format as last resort
+                    output = await this.executeCommand('batctl rt');
+                }
+            }
+            
             const routes = [];
             
             const lines = output.split('\n');
@@ -150,7 +194,7 @@ class NetworkManager {
             // Check batman-adv version
             let version = 'unknown';
             try {
-                version = await this.executeCommand('batctl -v');
+                version = await this.getBatmanVersion();
             } catch (error) {
                 // Version check failed
             }
