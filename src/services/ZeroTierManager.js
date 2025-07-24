@@ -150,15 +150,17 @@ class ZeroTierManager {
             // Remove existing network if it exists
             await this.executeCommand(`docker network rm ${this.dockerNetworkName} 2>/dev/null || true`);
             
-            // Get batman interface subnet for Docker network
+            // Get batman interface subnet for Docker network  
             const batmanSubnet = await this.getBatmanSubnet(batmanInterface);
             
             // Create Docker bridge network that will be connected to batman
             await this.executeCommand(`docker network create --driver bridge --subnet=${batmanSubnet} ${this.dockerNetworkName}`);
             
-            // Get the Docker bridge interface name
-            const dockerBridge = await this.executeCommand(`docker network inspect ${this.dockerNetworkName} -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}'`);
-            const bridgeInterface = await this.executeCommand(`ip route | grep ${dockerBridge} | grep -o 'dev [^ ]*' | cut -d' ' -f2`);
+            // Get the Docker bridge interface name by inspecting the network
+            const dockerNetworkInfo = await this.executeCommand(`docker network inspect ${this.dockerNetworkName} --format '{{.Id}}'`);
+            const bridgeInterface = `br-${dockerNetworkInfo.substring(0, 12)}`;
+            
+            logger.debug(`Docker bridge interface: ${bridgeInterface}`);
             
             // Connect Docker bridge to batman interface via host routing
             await this.setupBridgeRouting(bridgeInterface, batmanInterface);
@@ -193,17 +195,61 @@ class ZeroTierManager {
             // Enable IP forwarding
             await this.executeCommand('echo 1 > /proc/sys/net/ipv4/ip_forward');
             
-            // Add iptables rules to route traffic between Docker bridge and batman
-            await this.executeCommand(`iptables -A FORWARD -i ${dockerBridge} -o ${batmanInterface} -j ACCEPT 2>/dev/null || true`);
-            await this.executeCommand(`iptables -A FORWARD -i ${batmanInterface} -o ${dockerBridge} -j ACCEPT 2>/dev/null || true`);
+            // Get batman interface IP and network
+            const batmanGateway = await this.executeCommand(`ip route show dev ${batmanInterface} | grep 'proto kernel' | awk '{print $1}' | head -1 || echo "192.168.100.0/24"`);
+            const batmanGatewayIP = await this.executeCommand(`ip addr show ${batmanInterface} | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 || echo "192.168.100.1"`);
             
-            // NAT traffic from Docker containers through batman interface
+            logger.debug(`Batman network: ${batmanGateway}, Batman IP: ${batmanGatewayIP}`);
+            
+            // Block Docker containers from using default ethernet route
+            await this.executeCommand(`iptables -I FORWARD 1 -s 172.31.0.0/16 ! -d ${batmanGateway} -j DROP 2>/dev/null || true`);
+            
+            // Allow traffic between Docker bridge and batman network only
+            await this.executeCommand(`iptables -I FORWARD 1 -i ${dockerBridge} -o ${batmanInterface} -j ACCEPT 2>/dev/null || true`);
+            await this.executeCommand(`iptables -I FORWARD 1 -i ${batmanInterface} -o ${dockerBridge} -j ACCEPT 2>/dev/null || true`);
+            
+            // NAT traffic from Docker containers through batman interface ONLY
             await this.executeCommand(`iptables -t nat -A POSTROUTING -s 172.31.0.0/16 -o ${batmanInterface} -j MASQUERADE 2>/dev/null || true`);
             
-            logger.debug('✅ Bridge routing setup complete');
+            // Set up custom routing table for Docker containers to force batman routing
+            await this.setupDockerRouting(dockerBridge, batmanInterface, batmanGatewayIP);
+            
+            logger.debug('✅ Bridge routing setup complete - traffic forced through batman interface');
             
         } catch (error) {
             logger.error('Failed to setup bridge routing:', error);
+            throw error;
+        }
+    }
+
+    async setupDockerRouting(dockerBridge, batmanInterface, batmanGatewayIP) {
+        try {
+            logger.debug('Setting up custom routing for Docker containers...');
+            
+            // Add custom routing table for Docker traffic
+            await this.executeCommand('echo "201 docker_batman" >> /etc/iproute2/rt_tables 2>/dev/null || true');
+            
+            // Remove any existing routes in the custom table
+            await this.executeCommand('ip route flush table docker_batman 2>/dev/null || true');
+            
+            // Add default route for Docker containers through batman interface
+            await this.executeCommand(`ip route add default via ${batmanGatewayIP} dev ${batmanInterface} table docker_batman`);
+            
+            // Add local network route
+            await this.executeCommand(`ip route add 172.31.0.0/16 dev ${dockerBridge} table docker_batman`);
+            
+            // Add routing rule for Docker container traffic
+            await this.executeCommand('ip rule del from 172.31.0.0/16 table docker_batman 2>/dev/null || true');
+            await this.executeCommand('ip rule add from 172.31.0.0/16 table docker_batman priority 100');
+            
+            // Also add rule for traffic TO Docker containers that should route back through batman
+            await this.executeCommand('ip rule del to 172.31.0.0/16 table docker_batman 2>/dev/null || true');
+            await this.executeCommand('ip rule add to 172.31.0.0/16 table docker_batman priority 100');
+            
+            logger.debug('✅ Custom Docker routing table configured - all traffic will use batman interface');
+            
+        } catch (error) {
+            logger.error('Failed to setup Docker routing:', error);
             throw error;
         }
     }
@@ -399,7 +445,13 @@ class ZeroTierManager {
             // Remove Docker network
             await this.executeCommand(`docker network rm ${this.dockerNetworkName} 2>/dev/null || true`);
             
+            // Clean up custom routing rules
+            await this.executeCommand('ip rule del from 172.31.0.0/16 table docker_batman 2>/dev/null || true');
+            await this.executeCommand('ip rule del to 172.31.0.0/16 table docker_batman 2>/dev/null || true');
+            await this.executeCommand('ip route flush table docker_batman 2>/dev/null || true');
+            
             // Clean up iptables rules (try to remove, ignore errors)
+            await this.executeCommand('iptables -D FORWARD -s 172.31.0.0/16 ! -d 192.168.100.0/24 -j DROP 2>/dev/null || true');
             await this.executeCommand('iptables -D FORWARD -i br-* -o bat0 -j ACCEPT 2>/dev/null || true');
             await this.executeCommand('iptables -D FORWARD -i bat0 -o br-* -j ACCEPT 2>/dev/null || true');
             await this.executeCommand('iptables -t nat -D POSTROUTING -s 172.31.0.0/16 -o bat0 -j MASQUERADE 2>/dev/null || true');
