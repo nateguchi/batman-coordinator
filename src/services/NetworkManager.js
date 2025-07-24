@@ -55,11 +55,14 @@ class NetworkManager {
             await this.executeCommand('modprobe batman-adv');
             
             // Remove any existing batman interface
-            await this.executeCommand(`batctl if del ${this.meshInterface} 2>/dev/null || true`);
+            await this.executeCommand(`batctl meshif ${this.batmanInterface} interface del ${this.meshInterface} 2>/dev/null || true`);
             await this.executeCommand(`ip link delete ${this.batmanInterface} 2>/dev/null || true`);
             
-            // Add mesh interface to batman-adv
-            await this.executeCommand(`batctl if add ${this.meshInterface}`);
+            // Add mesh interface to batman-adv (use new syntax)
+            await this.executeCommand(`batctl meshif ${this.batmanInterface} interface add ${this.meshInterface}`);
+            
+            // Wait for batman interface to be created
+            await new Promise(resolve => setTimeout(resolve, 2000));
             
             // Bring up batman interface
             await this.executeCommand(`ip link set up dev ${this.batmanInterface}`);
@@ -85,17 +88,45 @@ class NetworkManager {
             const hopPenalty = process.env.BATMAN_HOP_PENALTY || '5000';
             const origInterval = process.env.BATMAN_ORIG_INTERVAL || '1000';
             
-            // Set hop penalty for better route selection
-            await this.executeCommand(`echo ${hopPenalty} > /sys/class/net/${this.batmanInterface}/mesh/hop_penalty`);
+            // Wait a bit more for the mesh interface to be fully ready
+            await new Promise(resolve => setTimeout(resolve, 1000));
             
-            // Set originator interval for faster topology updates
-            await this.executeCommand(`echo ${origInterval} > /sys/class/net/${this.batmanInterface}/mesh/orig_interval`);
+            // Check if batman interface exists before configuring
+            try {
+                await this.executeCommand(`ip link show ${this.batmanInterface}`);
+            } catch (error) {
+                logger.warn('Batman interface not ready, skipping optimization');
+                return;
+            }
             
-            // Enable distributed ARP table
-            await this.executeCommand(`echo 1 > /sys/class/net/${this.batmanInterface}/mesh/distributed_arp_table`);
+            // Use batctl commands instead of direct sysfs writes (new syntax)
+            try {
+                await this.executeCommand(`batctl meshif ${this.batmanInterface} hop_penalty ${hopPenalty}`);
+                logger.debug(`Set hop penalty to ${hopPenalty}`);
+            } catch (error) {
+                logger.warn('Failed to set hop penalty:', error.message);
+            }
             
-            // Enable bridge loop avoidance
-            await this.executeCommand(`echo 1 > /sys/class/net/${this.batmanInterface}/mesh/bridge_loop_avoidance`);
+            try {
+                await this.executeCommand(`batctl meshif ${this.batmanInterface} orig_interval ${origInterval}`);
+                logger.debug(`Set originator interval to ${origInterval}`);
+            } catch (error) {
+                logger.warn('Failed to set orig interval:', error.message);
+            }
+            
+            try {
+                await this.executeCommand(`batctl meshif ${this.batmanInterface} distributed_arp_table 1`);
+                logger.debug('Enabled distributed ARP table');
+            } catch (error) {
+                logger.warn('Failed to enable distributed ARP table:', error.message);
+            }
+            
+            try {
+                await this.executeCommand(`batctl meshif ${this.batmanInterface} bridge_loop_avoidance 1`);
+                logger.debug('Enabled bridge loop avoidance');
+            } catch (error) {
+                logger.warn('Failed to enable bridge loop avoidance:', error.message);
+            }
             
             logger.info('Batman-adv settings optimized');
             
@@ -332,8 +363,8 @@ class NetworkManager {
         logger.info('Cleaning up network configuration...');
         
         try {
-            // Remove batman interface
-            await this.executeCommand(`batctl if del ${this.meshInterface} 2>/dev/null || true`);
+            // Remove batman interface (use new syntax)
+            await this.executeCommand(`batctl meshif ${this.batmanInterface} interface del ${this.meshInterface} 2>/dev/null || true`);
             await this.executeCommand(`ip link set down dev ${this.batmanInterface} 2>/dev/null || true`);
             
             // Reset wireless interface
