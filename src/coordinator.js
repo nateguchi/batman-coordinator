@@ -11,6 +11,7 @@ const ZeroTierManager = require('./services/ZeroTierManager');
 const SecurityManager = require('./services/SecurityManager');
 const StatsCollector = require('./services/StatsCollector');
 const WebSocketHandler = require('./services/WebSocketHandler');
+const DHCPManager = require('./services/DHCPManager');
 
 class Coordinator {
     constructor() {
@@ -20,6 +21,7 @@ class Coordinator {
         
         this.networkManager = new NetworkManager();
         this.zeroTierManager = new ZeroTierManager();
+        this.dhcpManager = new DHCPManager();
         this.securityManager = new SecurityManager({
             batmanInterface: 'bat0',
             meshInterface: process.env.MESH_INTERFACE || 'wlan1',
@@ -84,6 +86,7 @@ class Coordinator {
             try {
                 const batmanStatus = await this.networkManager.getBatmanStatus();
                 const zeroTierStatus = await this.zeroTierManager.getStatus();
+                const dhcpStatus = await this.dhcpManager.getStatus();
                 
                 res.json({
                     coordinator: {
@@ -93,7 +96,8 @@ class Coordinator {
                     },
                     network: this.networkManager.getStatus(),
                     batman: batmanStatus,
-                    zeroTier: zeroTierStatus
+                    zeroTier: zeroTierStatus,
+                    dhcp: dhcpStatus
                 });
             } catch (error) {
                 logger.error('Failed to get status:', error);
@@ -192,6 +196,9 @@ class Coordinator {
         
         // Initialize batman-adv
         await this.networkManager.initializeBatman();
+        
+        // Setup DHCP server for mesh network
+        await this.dhcpManager.initialize();
         
         // Setup ZeroTier
         await this.zeroTierManager.initialize();
@@ -498,6 +505,11 @@ class Coordinator {
             if (this.zeroTierManager) {
                 await this.zeroTierManager.cleanupProcessBasedRouting();
                 await this.zeroTierManager.cleanupGatewayRouting(true); // true = coordinator cleanup
+            }
+            
+            // Cleanup DHCP server
+            if (this.dhcpManager) {
+                await this.dhcpManager.cleanup();
             }
             
             await this.networkManager.cleanup();

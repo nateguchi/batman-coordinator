@@ -186,14 +186,13 @@ class NetworkManager {
             
             // Configure batman interface IP
             if (process.env.NODE_ENV !== 'node') {
-                // Coordinator gets the master IP
+                // Coordinator gets the master IP (static for DHCP server)
                 await this.executeCommand(`ip addr add ${this.masterIp}/24 dev ${this.batmanInterface} 2>/dev/null || true`);
                 logger.info(`Assigned coordinator IP: ${this.masterIp}`);
             } else {
-                // Mesh nodes get unique IPs based on their hardware
-                const nodeIP = await this.generateNodeIP();
-                await this.executeCommand(`ip addr add ${nodeIP}/24 dev ${this.batmanInterface} 2>/dev/null || true`);
-                logger.info(`Assigned node IP: ${nodeIP}`);
+                // Mesh nodes will get IPs via DHCP from coordinator
+                logger.info(`Node will receive IP via DHCP from coordinator`);
+                // Note: DHCP configuration happens in ZeroTierManager.configureNodeGatewayRouting()
             }
             
             // Optimize batman-adv settings

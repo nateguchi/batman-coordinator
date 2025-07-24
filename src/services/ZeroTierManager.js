@@ -393,32 +393,44 @@ class ZeroTierManager {
         try {
             const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
             
-            logger.info('Adding batman route to coordinator (non-default)');
+            logger.info('Configuring node for DHCP-based routing');
             
-            // Remove any existing default route via batman (we don't want it as default)
+            // Remove any existing manual routes that might conflict with DHCP
             await this.executeCommand(`ip route del default via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
-            
-            // Instead of adding a default route, add a specific route to the coordinator
-            // This ensures the route exists for connectivity without interfering with default routing
             await this.executeCommand(`ip route del ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
-            await this.executeCommand(`ip route add ${coordinatorIP} dev ${batmanInterface}`);
             
-            // Ensure we can still reach local mesh network
-            const meshSubnet = process.env.MESH_SUBNET || '192.168.100.0/24';
-            await this.executeCommand(`ip route add ${meshSubnet} dev ${batmanInterface} 2>/dev/null || true`);
+            // Enable DHCP client on batman interface
+            // This will automatically configure IP, gateway, and routes
+            logger.info(`Enabling DHCP client on ${batmanInterface}`);
             
-            // Add specific route for ZeroTier network if available
+            // Release any existing DHCP lease
+            await this.executeCommand(`dhclient -r ${batmanInterface} 2>/dev/null || true`);
+            
+            // Request new DHCP lease
+            await this.executeCommand(`dhclient ${batmanInterface}`);
+            
+            // Wait a moment for DHCP to configure the interface
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Verify DHCP configuration
+            const routes = await this.executeCommand('ip route show');
+            logger.info('Routes after DHCP configuration:', routes);
+            
+            // Add specific route for ZeroTier network if available and needed
             const networks = await this.getNetworks();
             const targetNetwork = networks.find(n => n.id === this.networkId);
             if (targetNetwork && targetNetwork.assignedAddresses.length > 0) {
                 const ztNetwork = this.extractNetworkFromIP(targetNetwork.assignedAddresses[0]);
-                await this.executeCommand(`ip route add ${ztNetwork} via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
+                // Only add if route doesn't already exist via DHCP
+                if (!routes.includes(ztNetwork)) {
+                    await this.executeCommand(`ip route add ${ztNetwork} via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
+                }
             }
             
-            logger.info(`Node configured to route all traffic via ${coordinatorIP} through ${batmanInterface}`);
+            logger.info(`Node configured with DHCP-based routing on ${batmanInterface}`);
             
         } catch (error) {
-            logger.error('Failed to configure node gateway routing:', error);
+            logger.error('Failed to configure node DHCP routing:', error);
             throw error;
         }
     }
