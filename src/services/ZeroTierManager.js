@@ -269,68 +269,90 @@ class ZeroTierManager {
     async configureProcessBasedRouting(batmanInterface) {
         try {
             const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
-            const markValue = '0x100'; // Custom mark for ZeroTier traffic
-            const tableId = '100'; // Custom routing table for ZeroTier
             
-            logger.info('Setting up enhanced process-based routing for ZeroTier');
+            logger.info('Setting up direct ZeroTier routing through batman mesh');
             
-            // Step 1: Clean up any existing configuration
-            await this.executeCommand(`ip rule del fwmark ${markValue} table ${tableId} 2>/dev/null || true`);
-            await this.executeCommand(`ip route flush table ${tableId} 2>/dev/null || true`);
-            
-            // Step 2: Verify batman interface is ready and has connectivity
-            try {
-                const batmanStatus = await this.executeCommand(`ip link show ${batmanInterface}`);
-                if (!batmanStatus.includes('UP')) {
-                    throw new Error(`Batman interface ${batmanInterface} is not UP`);
-                }
-                
-                // Test connectivity to coordinator
-                const pingTest = await this.executeCommand(`ping -c 1 -W 2 ${coordinatorIP} 2>/dev/null || echo "failed"`);
-                if (!pingTest.includes('1 received')) {
-                    logger.warn(`Warning: Cannot ping coordinator ${coordinatorIP} via batman - continuing anyway`);
-                }
-            } catch (error) {
-                logger.error(`Batman interface issue: ${error.message}`);
-                throw error;
-            }
-            
-            // Step 3: Create custom routing table with high priority
-            // Use priority 100 (higher than default 32766) to ensure it takes precedence
-            await this.executeCommand(`ip rule add fwmark ${markValue} table ${tableId} priority 100`);
-            
-            // Add comprehensive routes in custom table
-            await this.executeCommand(`ip route add default via ${coordinatorIP} dev ${batmanInterface} table ${tableId}`);
-            
-            // Add specific route to coordinator to ensure connectivity
-            await this.executeCommand(`ip route add ${coordinatorIP}/32 dev ${batmanInterface} table ${tableId} 2>/dev/null || true`);
-            
-            // Step 4: Set up traffic marking with multiple fallback methods
-            await this.setupZeroTierTrafficMarking(markValue);
-            
-            // Step 5: Add additional routes for ZeroTier network if available
+            // Get ZeroTier interface and network info
             const networks = await this.getNetworks();
             const targetNetwork = networks.find(n => n.id === this.networkId);
-            if (targetNetwork && targetNetwork.assignedAddresses.length > 0) {
+            
+            if (!targetNetwork || !targetNetwork.interface) {
+                throw new Error('ZeroTier network not ready for routing configuration');
+            }
+            
+            const ztInterface = targetNetwork.interface;
+            
+            // Verify batman interface is ready
+            const batmanStatus = await this.executeCommand(`ip link show ${batmanInterface}`);
+            if (!batmanStatus.includes('UP')) {
+                throw new Error(`Batman interface ${batmanInterface} is not UP`);
+            }
+            
+            logger.info(`Configuring direct routing: ZeroTier ${ztInterface} -> Batman ${batmanInterface}`);
+            
+            // Method 1: Block ZeroTier traffic on ethernet interfaces
+            // This forces ZeroTier to use whatever route is available (batman)
+            const ethernetInterface = process.env.ETHERNET_INTERFACE || 'eth0';
+            
+            // Remove any existing blocking rules
+            await this.executeCommand(`iptables -D OUTPUT -o ${ethernetInterface} -p udp --dport 9993 -j DROP 2>/dev/null || true`);
+            await this.executeCommand(`iptables -D OUTPUT -o eth1 -p udp --dport 9993 -j DROP 2>/dev/null || true`);
+            
+            // Block ZeroTier protocol traffic on ethernet interfaces
+            await this.executeCommand(`iptables -I OUTPUT -o ${ethernetInterface} -p udp --dport 9993 -j DROP`);
+            if (ethernetInterface !== 'eth1') {
+                await this.executeCommand(`iptables -I OUTPUT -o eth1 -p udp --dport 9993 -j DROP 2>/dev/null || true`);
+            }
+            
+            // Method 2: Add specific route for ZeroTier infrastructure via batman
+            // Get ZeroTier peer IPs and route them through batman
+            try {
+                const peers = await this.getPeers();
+                for (const peer of peers) {
+                    if (peer.role === 'PLANET' || peer.role === 'MOON') {
+                        for (const path of peer.paths) {
+                            if (path.includes('/')) {
+                                const peerIP = path.split('/')[0];
+                                // Add route for this peer via batman
+                                await this.executeCommand(`ip route add ${peerIP}/32 via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
+                                logger.debug(`Added route for ZeroTier peer ${peerIP} via batman`);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                logger.warn('Could not configure peer-specific routes:', error.message);
+            }
+            
+            // Method 3: Route ZeroTier's common infrastructure IPs through batman
+            const zerotierInfraIPs = [
+                '103.195.103.0/24',  // ZeroTier infrastructure
+                '84.17.53.0/24',     // ZeroTier infrastructure  
+                '206.189.156.0/24'   // ZeroTier infrastructure
+            ];
+            
+            for (const subnet of zerotierInfraIPs) {
+                await this.executeCommand(`ip route add ${subnet} via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
+            }
+            
+            // Method 4: Set default route with higher metric for ZeroTier interface
+            // This makes batman the preferred path when ethernet is blocked
+            await this.executeCommand(`ip route add default via ${coordinatorIP} dev ${batmanInterface} metric 150 2>/dev/null || true`);
+            
+            // Add route for ZeroTier network itself if available
+            if (targetNetwork.assignedAddresses.length > 0) {
                 const ztNetwork = this.extractNetworkFromIP(targetNetwork.assignedAddresses[0]);
-                // Add to both main table and custom table
-                await this.executeCommand(`ip route add ${ztNetwork} via ${coordinatorIP} dev ${batmanInterface} table ${tableId} 2>/dev/null || true`);
                 await this.executeCommand(`ip route add ${ztNetwork} via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
             }
             
-            // Step 6: Force routing cache flush to ensure rules take effect
+            // Force routing cache flush
             await this.executeCommand('ip route flush cache 2>/dev/null || true');
             
-            // Step 7: Verify configuration
-            const verification = await this.verifyProcessBasedRouting();
-            if (!verification.isConfigured) {
-                throw new Error('Process-based routing verification failed after setup');
-            }
-            
-            logger.info(`✅ Enhanced ZeroTier process routing configured: ${verification.markingMethod} marking via ${batmanInterface}`);
+            logger.info(`✅ Direct ZeroTier routing configured: ${ztInterface} -> ${batmanInterface}`);
+            logger.info('ZeroTier traffic will be forced through batman mesh by blocking ethernet paths');
             
         } catch (error) {
-            logger.error('Failed to configure process-based routing:', error);
+            logger.error('Failed to configure direct ZeroTier routing:', error);
             throw error;
         }
     }
@@ -619,47 +641,58 @@ class ZeroTierManager {
 
     async cleanupProcessBasedRouting() {
         try {
+            logger.info('Cleaning up ZeroTier direct routing');
+            
+            // Clean up old iptables marking rules
             const markValue = '0x100';
             const tableId = '100';
             
-            logger.info('Cleaning up ZeroTier process-based routing');
-            
-            // Remove iptables marking rules - try all possible variations
             await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
             await this.executeCommand(`iptables -t mangle -D OUTPUT -m cgroup --cgroup 0x100001 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
             await this.executeCommand(`iptables -t mangle -D OUTPUT -p udp --dport 9993 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
             
-            // Try to remove by UID if zerotier user exists
-            try {
-                const ztUser = await this.executeCommand('id -u zerotier-one 2>/dev/null || echo ""');
-                if (ztUser.trim()) {
-                    await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner ${ztUser.trim()} -j MARK --set-mark ${markValue} 2>/dev/null || true`);
-                }
-            } catch (error) {
-                // Ignore
+            // Clean up custom routing table and rules
+            await this.executeCommand(`ip rule del fwmark ${markValue} table ${tableId} 2>/dev/null || true`);
+            await this.executeCommand(`ip route flush table ${tableId} 2>/dev/null || true`);
+            
+            // Clean up new direct routing approach
+            const ethernetInterface = process.env.ETHERNET_INTERFACE || 'eth0';
+            
+            // Remove ZeroTier blocking rules
+            await this.executeCommand(`iptables -D OUTPUT -o ${ethernetInterface} -p udp --dport 9993 -j DROP 2>/dev/null || true`);
+            await this.executeCommand(`iptables -D OUTPUT -o eth1 -p udp --dport 9993 -j DROP 2>/dev/null || true`);
+            await this.executeCommand(`iptables -D OUTPUT -o eth0 -p udp --dport 9993 -j DROP 2>/dev/null || true`);
+            
+            // Remove ZeroTier infrastructure routes (these will fall back to default routing)
+            const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
+            const batmanInterface = process.env.BATMAN_INTERFACE || 'bat0';
+            
+            const zerotierInfraIPs = [
+                '103.195.103.0/24',
+                '84.17.53.0/24', 
+                '206.189.156.0/24'
+            ];
+            
+            for (const subnet of zerotierInfraIPs) {
+                await this.executeCommand(`ip route del ${subnet} via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
             }
             
-            // Remove interface-based marking if it exists
+            // Remove batman default route with metric 150
+            await this.executeCommand(`ip route del default via ${coordinatorIP} dev ${batmanInterface} metric 150 2>/dev/null || true`);
+            
+            // Clean up interface-based marking if it exists
             const ztInterface = await this.getZeroTierInterface();
             if (ztInterface) {
                 await this.executeCommand(`iptables -t mangle -D OUTPUT -o ${ztInterface} -j MARK --set-mark ${markValue} 2>/dev/null || true`);
             }
             
             // Clean up cgroup if we created it
-            try {
-                await this.executeCommand('rmdir /sys/fs/cgroup/net_cls/zerotier 2>/dev/null || true');
-            } catch (error) {
-                // Ignore
-            }
+            await this.executeCommand('rmdir /sys/fs/cgroup/net_cls/zerotier 2>/dev/null || true');
             
-            // Remove custom routing table and rule
-            await this.executeCommand(`ip rule del fwmark ${markValue} table ${tableId} 2>/dev/null || true`);
-            await this.executeCommand(`ip route flush table ${tableId} 2>/dev/null || true`);
-            
-            logger.info('ZeroTier process-based routing cleanup complete');
+            logger.info('ZeroTier direct routing cleanup complete');
             
         } catch (error) {
-            logger.error('Failed to cleanup process-based routing:', error);
+            logger.error('Failed to cleanup direct routing:', error);
         }
     }
 
@@ -756,6 +789,51 @@ class ZeroTierManager {
             
         } catch (error) {
             logger.error('Failed to verify gateway routing:', error);
+            return { isConfigured: false, error: error.message };
+        }
+    }
+
+    async verifyDirectRouting() {
+        try {
+            logger.debug('Verifying ZeroTier direct routing configuration');
+            
+            const ethernetInterface = process.env.ETHERNET_INTERFACE || 'eth0';
+            const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
+            const batmanInterface = process.env.BATMAN_INTERFACE || 'bat0';
+            
+            // Check if ZeroTier blocking rules exist
+            const iptablesOutput = await this.executeCommand('iptables -L OUTPUT -n -v --line-numbers');
+            const hasEthernetBlock = iptablesOutput.includes('DROP') && 
+                                   iptablesOutput.includes('9993') && 
+                                   iptablesOutput.includes(ethernetInterface);
+            
+            // Check if batman routes exist
+            const routeOutput = await this.executeCommand('ip route show');
+            const hasBatmanRoutes = routeOutput.includes(`via ${coordinatorIP} dev ${batmanInterface}`);
+            
+            // Check ZeroTier infrastructure routes
+            const zerotierInfraIPs = ['103.195.103.0/24', '84.17.53.0/24', '206.189.156.0/24'];
+            let hasInfraRoutes = false;
+            for (const subnet of zerotierInfraIPs) {
+                if (routeOutput.includes(subnet)) {
+                    hasInfraRoutes = true;
+                    break;
+                }
+            }
+            
+            const status = {
+                hasEthernetBlock,
+                hasBatmanRoutes,
+                hasInfraRoutes,
+                isConfigured: hasEthernetBlock && hasBatmanRoutes,
+                method: 'direct-routing'
+            };
+            
+            logger.debug('Direct routing status:', status);
+            return status;
+            
+        } catch (error) {
+            logger.error('Failed to verify direct routing:', error);
             return { isConfigured: false, error: error.message };
         }
     }
