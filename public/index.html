@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Batman Mesh Coordinator</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1><i class="fas fa-network-wired"></i> Batman Mesh Coordinator</h1>
+                <div class="header-status">
+                    <div class="status-indicator" id="coordinatorStatus">
+                        <span class="status-dot offline"></span>
+                        <span class="status-text">Connecting...</span>
+                    </div>
+                    <div class="timestamp" id="lastUpdate">Last update: --</div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Navigation -->
+        <nav class="nav-tabs">
+            <button class="nav-tab active" data-tab="overview">
+                <i class="fas fa-dashboard"></i> Overview
+            </button>
+            <button class="nav-tab" data-tab="topology">
+                <i class="fas fa-project-diagram"></i> Network Topology
+            </button>
+            <button class="nav-tab" data-tab="nodes">
+                <i class="fas fa-server"></i> Nodes
+            </button>
+            <button class="nav-tab" data-tab="stats">
+                <i class="fas fa-chart-line"></i> Statistics
+            </button>
+            <button class="nav-tab" data-tab="security">
+                <i class="fas fa-shield-alt"></i> Security
+            </button>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Overview Tab -->
+            <section id="overview" class="tab-content active">
+                <div class="overview-grid">
+                    <!-- System Status Card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-server"></i> System Status</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="status-grid">
+                                <div class="status-item">
+                                    <span class="label">Uptime:</span>
+                                    <span class="value" id="systemUptime">--</span>
+                                </div>
+                                <div class="status-item">
+                                    <span class="label">CPU Usage:</span>
+                                    <span class="value" id="cpuUsage">--%</span>
+                                </div>
+                                <div class="status-item">
+                                    <span class="label">Memory Usage:</span>
+                                    <span class="value" id="memoryUsage">--%</span>
+                                </div>
+                                <div class="status-item">
+                                    <span class="label">Temperature:</span>
+                                    <span class="value" id="cpuTemp">--°C</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Network Status Card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-wifi"></i> Network Status</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="network-status">
+                                <div class="network-item">
+                                    <div class="network-label">
+                                        <i class="fas fa-network-wired"></i>
+                                        Batman Mesh
+                                    </div>
+                                    <div class="network-status-indicator" id="batmanStatus">
+                                        <span class="status-dot offline"></span>
+                                        <span>Offline</span>
+                                    </div>
+                                </div>
+                                <div class="network-item">
+                                    <div class="network-label">
+                                        <i class="fas fa-globe"></i>
+                                        ZeroTier
+                                    </div>
+                                    <div class="network-status-indicator" id="zeroTierStatus">
+                                        <span class="status-dot offline"></span>
+                                        <span>Offline</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Mesh Nodes Card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-sitemap"></i> Mesh Nodes</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="nodes-summary">
+                                <div class="nodes-count">
+                                    <span class="count" id="totalNodes">0</span>
+                                    <span class="label">Total Nodes</span>
+                                </div>
+                                <div class="nodes-status">
+                                    <div class="status-breakdown">
+                                        <span class="online" id="onlineNodes">0</span> Online
+                                        <span class="warning" id="warningNodes">0</span> Warning
+                                        <span class="offline" id="offlineNodes">0</span> Offline
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Traffic Stats Card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-exchange-alt"></i> Traffic Statistics</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="traffic-stats">
+                                <div class="traffic-item">
+                                    <span class="label">RX:</span>
+                                    <span class="value" id="rxTraffic">-- MB</span>
+                                </div>
+                                <div class="traffic-item">
+                                    <span class="label">TX:</span>
+                                    <span class="value" id="txTraffic">-- MB</span>
+                                </div>
+                                <div class="traffic-item">
+                                    <span class="label">Packets:</span>
+                                    <span class="value" id="totalPackets">--</span>
+                                </div>
+                                <div class="traffic-item">
+                                    <span class="label">Errors:</span>
+                                    <span class="value" id="errorCount">--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Events -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-clock"></i> Recent Events</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="events-list" id="recentEvents">
+                            <div class="event-item">
+                                <span class="event-time">--:--:--</span>
+                                <span class="event-type info">INFO</span>
+                                <span class="event-message">System starting up...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Network Topology Tab -->
+            <section id="topology" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-project-diagram"></i> Network Topology</h3>
+                        <div class="card-actions">
+                            <button class="btn btn-sm" id="refreshTopology">
+                                <i class="fas fa-refresh"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="topology-container">
+                            <svg id="topologyGraph" width="100%" height="500"></svg>
+                        </div>
+                        <div class="topology-legend">
+                            <div class="legend-item">
+                                <span class="legend-color coordinator"></span>
+                                <span>Coordinator</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color node"></span>
+                                <span>Mesh Node</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color link-good"></span>
+                                <span>Good Link</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color link-poor"></span>
+                                <span>Poor Link</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Nodes Tab -->
+            <section id="nodes" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-server"></i> Mesh Nodes</h3>
+                        <div class="card-actions">
+                            <button class="btn btn-sm" id="refreshNodes">
+                                <i class="fas fa-refresh"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="nodes-table-container">
+                            <table class="nodes-table">
+                                <thead>
+                                    <tr>
+                                        <th>Node ID</th>
+                                        <th>Address</th>
+                                        <th>Status</th>
+                                        <th>Last Seen</th>
+                                        <th>CPU</th>
+                                        <th>Memory</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="nodesTableBody">
+                                    <tr>
+                                        <td colspan="7" class="no-data">No nodes detected</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Statistics Tab -->
+            <section id="stats" class="tab-content">
+                <div class="stats-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-chart-line"></i> Performance Metrics</h3>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="performanceChart" width="400" height="200"></canvas>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-network-wired"></i> Network Traffic</h3>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="trafficChart" width="400" height="200"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Security Tab -->
+            <section id="security" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-shield-alt"></i> Security Status</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="security-grid">
+                            <div class="security-item">
+                                <div class="security-label">
+                                    <i class="fas fa-firewall"></i>
+                                    Firewall Status
+                                </div>
+                                <div class="security-status" id="firewallStatus">
+                                    <span class="status-dot online"></span>
+                                    <span>Active</span>
+                                </div>
+                            </div>
+                            <div class="security-item">
+                                <div class="security-label">
+                                    <i class="fas fa-lock"></i>
+                                    ZeroTier Encryption
+                                </div>
+                                <div class="security-status" id="encryptionStatus">
+                                    <span class="status-dot online"></span>
+                                    <span>Enabled</span>
+                                </div>
+                            </div>
+                            <div class="security-item">
+                                <div class="security-label">
+                                    <i class="fas fa-ban"></i>
+                                    Blocked Connections
+                                </div>
+                                <div class="security-value" id="blockedConnections">0</div>
+                            </div>
+                        </div>
+                        
+                        <div class="security-logs">
+                            <h4>Security Events</h4>
+                            <div class="logs-container" id="securityLogs">
+                                <div class="log-entry">
+                                    <span class="log-time">--:--:--</span>
+                                    <span class="log-level info">INFO</span>
+                                    <span class="log-message">Security monitoring active</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
