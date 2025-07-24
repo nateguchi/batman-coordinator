@@ -11,6 +11,8 @@ class ZeroTierManager {
         this.authToken = process.env.ZEROTIER_AUTH_TOKEN;
         this.allowedSubnets = (process.env.ALLOWED_ZEROTIER_SUBNETS || '').split(',').filter(s => s.trim());
         this.zerotierInterface = null;
+        this.containerName = 'zerotier-batman';
+        this.dockerNetworkName = 'batman-zerotier';
     }
 
     async executeCommand(command, options = {}) {
@@ -46,19 +48,19 @@ class ZeroTierManager {
             return;
         }
         
-        logger.info(`Initializing ZeroTier with chroot isolation for network: ${this.networkId}`);
+        logger.info(`Initializing ZeroTier with Docker isolation for network: ${this.networkId}`);
         
         try {
-            // First check if we have ZeroTier binaries
-            await this.checkZeroTierBinaries();
+            // Check if Docker is available
+            await this.checkDockerAvailability();
             
             // Disable system ZeroTier service to prevent conflicts
             await this.disableSystemZeroTier();
             
-            // Configure using chroot + namespace isolation
-            await this.configureChrootBasedRouting();
+            // Configure using Docker + bridge networking
+            await this.configureDockerBasedRouting();
             
-            logger.info('✅ ZeroTier chroot isolation configured successfully');
+            logger.info('✅ ZeroTier Docker isolation configured successfully');
             
         } catch (error) {
             logger.error('Failed to initialize ZeroTier:', error);
@@ -104,324 +106,172 @@ class ZeroTierManager {
         }
     }
     
-    async checkZeroTierBinaries() {
+    async checkDockerAvailability() {
         try {
-            // Check if ZeroTier binaries exist
-            await this.executeCommand('which zerotier-one');
-            await this.executeCommand('which zerotier-cli');
+            // Check if Docker is installed and running
+            await this.executeCommand('docker --version');
+            await this.executeCommand('docker info');
             
-            logger.debug('ZeroTier binaries found');
+            logger.debug('Docker is available and running');
             
         } catch (error) {
-            throw new Error('ZeroTier binaries not found. Please install ZeroTier first.');
+            throw new Error('Docker is not available. Please install and start Docker first.');
         }
     }
 
-    async configureChrootBasedRouting(batmanInterface = 'bat0') {
+    async configureDockerBasedRouting(batmanInterface = 'bat0') {
         try {
-            logger.info('Setting up chroot + network namespace isolation for ZeroTier...');
+            logger.info('Setting up Docker-based ZeroTier isolation...');
             
-            const nsName = 'zt-batman';
-            const chrootPath = '/var/lib/zerotier-chroot';
+            // 1. Create Docker network connected to batman interface
+            await this.setupDockerNetwork(batmanInterface);
             
-            // 1. Setup the chroot environment
-            await this.setupZeroTierChroot(chrootPath);
+            // 2. Start ZeroTier container with proper networking
+            await this.startZeroTierContainer();
             
-            // 2. Create network namespace
-            await this.setupNetworkNamespace(nsName, batmanInterface);
-            
-            // 3. Move ZeroTier into the namespace + chroot
-            await this.moveZeroTierToNamespace(nsName, chrootPath);
-            
-            logger.info('✅ Chroot-based routing configured successfully');
-            
-        } catch (error) {
-            logger.error('Failed to configure chroot-based routing:', error);
-            throw error;
-        }
-    }
-
-    async setupZeroTierChroot(chrootPath) {
-        try {
-            logger.debug('Setting up ZeroTier chroot environment...');
-            
-            // Create directory structure explicitly
-            const dirs = [
-                'bin', 'lib', 'lib64', 'usr/bin', 'usr/sbin', 'usr/lib', 
-                'var/lib/zerotier-one', 'proc', 'sys', 'dev', 'etc'
-            ];
-            
-            for (const dir of dirs) {
-                await this.executeCommand(`mkdir -p ${chrootPath}/${dir}`);
-            }
-            
-            // Detect actual ZeroTier binary locations
-            let zerotierOnePath, zerotierCliPath;
-            try {
-                zerotierOnePath = await this.executeCommand('which zerotier-one');
-                zerotierCliPath = await this.executeCommand('which zerotier-cli');
-                logger.debug(`Found ZeroTier binaries: ${zerotierOnePath}, ${zerotierCliPath}`);
-            } catch (error) {
-                throw new Error('ZeroTier binaries not found in PATH');
-            }
-            
-            // Copy ZeroTier binaries from their actual locations
-            // First ensure no ZeroTier processes are running that might lock the files
-            try {
-                await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
-                await this.executeCommand('killall zerotier-one 2>/dev/null || true');
-                // Wait a moment for processes to fully stop
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            } catch (error) {
-                logger.debug('Process killing before copy failed, continuing...');
-            }
-            
-            // Use cat instead of cp to avoid "text file busy" errors
-            try {
-                await this.executeCommand(`cat ${zerotierOnePath} > ${chrootPath}/usr/bin/zerotier-one`);
-                await this.executeCommand(`chmod 755 ${chrootPath}/usr/bin/zerotier-one`);
-            } catch (error) {
-                logger.warn('Failed to copy zerotier-one with cat, trying cp...');
-                await this.executeCommand(`cp ${zerotierOnePath} ${chrootPath}/usr/bin/`);
-            }
-            
-            try {
-                await this.executeCommand(`cat ${zerotierCliPath} > ${chrootPath}/usr/bin/zerotier-cli`);
-                await this.executeCommand(`chmod 755 ${chrootPath}/usr/bin/zerotier-cli`);
-            } catch (error) {
-                logger.warn('Failed to copy zerotier-cli with cat, trying cp...');
-                await this.executeCommand(`cp ${zerotierCliPath} ${chrootPath}/usr/bin/`);
-            }
-            
-            // Copy required libraries (handle both dynamic and static executables)
-            try {
-                const libraries = await this.executeCommand(`ldd ${zerotierOnePath} | grep "=>" | awk '{print $3}'`);
-                if (libraries.trim()) {
-                    logger.debug('Copying dynamic libraries for ZeroTier...');
-                    for (const lib of libraries.split('\n').filter(l => l.trim())) {
-                        const libPath = lib.trim();
-                        if (libPath && libPath !== 'null') {
-                            const targetDir = `${chrootPath}${libPath.substring(0, libPath.lastIndexOf('/'))}`;
-                            await this.executeCommand(`mkdir -p ${targetDir}`);
-                            await this.executeCommand(`cp ${libPath} ${chrootPath}${libPath} 2>/dev/null || true`);
-                        }
-                    }
-                } else {
-                    logger.debug('ZeroTier appears to be statically linked, skipping library copying');
-                }
-            } catch (error) {
-                logger.debug('ZeroTier appears to be statically linked or ldd failed, skipping library copying');
-            }
-            
-            // Copy essential system libraries that might be needed regardless
-            const essentialLibs = [
-                '/lib64/ld-linux-x86-64.so.2',
-                '/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2',
-                '/usr/lib64/ld-linux-x86-64.so.2',
-                '/lib/ld-linux.so.2',
-                '/lib64/libc.so.6',
-                '/lib/x86_64-linux-gnu/libc.so.6'
-            ];
-            
-            for (const lib of essentialLibs) {
-                try {
-                    const targetDir = `${chrootPath}${lib.substring(0, lib.lastIndexOf('/'))}`;
-                    await this.executeCommand(`mkdir -p ${targetDir}`);
-                    await this.executeCommand(`cp ${lib} ${chrootPath}${lib} 2>/dev/null || true`);
-                } catch (error) {
-                    // Ignore errors - these libraries might not exist on all systems
-                }
-            }
-            
-            // Copy essential files
-            await this.executeCommand(`cp /etc/resolv.conf ${chrootPath}/etc/ 2>/dev/null || true`);
-            await this.executeCommand(`cp /etc/hosts ${chrootPath}/etc/ 2>/dev/null || true`);
-            
-            // Create device nodes
-            await this.executeCommand(`mknod ${chrootPath}/dev/null c 1 3 2>/dev/null || true`);
-            await this.executeCommand(`mknod ${chrootPath}/dev/zero c 1 5 2>/dev/null || true`);
-            await this.executeCommand(`mknod ${chrootPath}/dev/random c 1 8 2>/dev/null || true`);
-            await this.executeCommand(`mknod ${chrootPath}/dev/urandom c 1 9 2>/dev/null || true`);
-            
-            // Set permissions
-            await this.executeCommand(`chmod 755 ${chrootPath}/usr/bin/zerotier-*`);
-            await this.executeCommand(`chmod 755 ${chrootPath}/var/lib/zerotier-one`);
-            
-            logger.debug('✅ Chroot environment setup complete');
-            
-        } catch (error) {
-            logger.error('Failed to setup chroot environment:', error);
-            throw error;
-        }
-    }
-
-    async setupNetworkNamespace(nsName, batmanInterface) {
-        try {
-            logger.debug('Setting up network namespace...');
-            
-            // Delete existing namespace if it exists
-            await this.executeCommand(`ip netns del ${nsName} 2>/dev/null || true`);
-            
-            // Create new network namespace
-            await this.executeCommand(`ip netns add ${nsName}`);
-            
-            // Create veth pair
-            const vethHost = 'veth-zt-host';
-            const vethNs = 'veth-zt-ns';
-            
-            await this.executeCommand(`ip link del ${vethHost} 2>/dev/null || true`);
-            await this.executeCommand(`ip link add ${vethHost} type veth peer name ${vethNs}`);
-            
-            // Move one end to namespace
-            await this.executeCommand(`ip link set ${vethNs} netns ${nsName}`);
-            
-            // Create bridge and add batman interface
-            const bridgeName = 'br-zt-batman';
-            await this.executeCommand(`ip link del ${bridgeName} 2>/dev/null || true`);
-            await this.executeCommand(`ip link add name ${bridgeName} type bridge`);
-            await this.executeCommand(`ip link set ${bridgeName} up`);
-            
-            // Add batman interface to bridge
-            await this.executeCommand(`ip link set ${batmanInterface} master ${bridgeName}`);
-            
-            // Add veth host end to bridge  
-            await this.executeCommand(`ip link set ${vethHost} master ${bridgeName}`);
-            await this.executeCommand(`ip link set ${vethHost} up`);
-            
-            // Configure namespace side
-            await this.executeCommand(`ip netns exec ${nsName} ip link set lo up`);
-            await this.executeCommand(`ip netns exec ${nsName} ip link set ${vethNs} up`);
-            
-            // Give namespace access only to batman network via bridge
-            // The namespace will inherit batman's network connectivity
-            await this.executeCommand(`ip netns exec ${nsName} ip addr add 169.254.1.100/30 dev ${vethNs}`);
-            await this.executeCommand(`ip addr add 169.254.1.101/30 dev ${vethHost}`);
-            
-            logger.debug('✅ Network namespace setup complete');
-            
-        } catch (error) {
-            logger.error('Failed to setup network namespace:', error);
-            throw error;
-        }
-    }
-
-    async moveZeroTierToNamespace(nsName, chrootPath) {
-        try {
-            logger.debug('Starting ZeroTier in namespace + chroot as subprocess');
-            
-            // Stop existing ZeroTier service (already done in initialize, but double-check)
-            await this.executeCommand('systemctl stop zerotier-one 2>/dev/null || true');
-            
-            // Kill any running ZeroTier processes using multiple methods
-            try {
-                await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
-            } catch (error) {
-                try {
-                    await this.executeCommand('killall zerotier-one 2>/dev/null || true');
-                } catch (error2) {
-                    try {
-                        const pids = await this.executeCommand('pgrep -f zerotier-one 2>/dev/null || echo ""');
-                        if (pids.trim()) {
-                            await this.executeCommand(`kill -TERM ${pids.trim().split('\n').join(' ')} 2>/dev/null || true`);
-                        }
-                    } catch (error3) {
-                        logger.debug('All process killing methods failed, continuing...');
-                    }
-                }
-            }
-            
-            // Copy ZeroTier data to chroot
-            await this.executeCommand(`cp -r /var/lib/zerotier-one/* ${chrootPath}/var/lib/zerotier-one/ 2>/dev/null || true`);
-            
-            // Mount proc and sys in chroot
-            await this.executeCommand(`mount -t proc proc ${chrootPath}/proc 2>/dev/null || true`);
-            await this.executeCommand(`mount -t sysfs sysfs ${chrootPath}/sys 2>/dev/null || true`);
-            
-            // Start ZeroTier as a subprocess in the namespace + chroot
-            const command = `ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-one`;
-            logger.debug(`Starting ZeroTier subprocess: ${command}`);
-            
-            // Use spawn to run as background process
-            this.zerotierProcess = spawn('ip', ['netns', 'exec', nsName, 'chroot', chrootPath, '/usr/bin/zerotier-one'], {
-                detached: true,
-                stdio: ['ignore', 'ignore', 'ignore']
-            });
-            
-            this.zerotierProcess.unref(); // Allow parent to exit without waiting
-            
-            // Store process info for cleanup
-            this.chrootPath = chrootPath;
-            this.nsName = nsName;
-            
-            // Wait for ZeroTier to start
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            
-            // Verify it's running in namespace
-            const nsProcesses = await this.executeCommand(`ip netns exec ${nsName} ps aux | grep zerotier || echo "not found"`);
-            if (!nsProcesses.includes('zerotier-one')) {
-                throw new Error('ZeroTier failed to start in network namespace');
-            }
-            
-            logger.debug('✅ ZeroTier subprocess started in network namespace');
-            
-            // Join the ZeroTier network if specified
+            // 3. Join ZeroTier network and wait for readiness
             if (this.networkId) {
-                logger.info(`Joining ZeroTier network ${this.networkId} in namespace...`);
-                
-                // First check if ZeroTier is responding
-                try {
-                    const infoResult = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli info`);
-                    logger.debug(`ZeroTier info before joining: ${infoResult}`);
-                } catch (infoError) {
-                    logger.warn(`ZeroTier CLI not responding before join: ${infoError.message}`);
-                }
-                
-                // Join the network
-                const joinResult = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli join ${this.networkId}`);
-                logger.debug(`ZeroTier join result: ${joinResult}`);
-                
-                // Wait for network to be ready
-                await this.waitForNamespacedZeroTierReady(nsName, chrootPath);
+                await this.joinZeroTierNetwork();
+                await this.waitForZeroTierReady();
             }
             
+            logger.info('✅ Docker-based ZeroTier routing configured successfully');
+            
         } catch (error) {
-            logger.error('Failed to move ZeroTier to namespace:', error);
+            logger.error('Failed to configure Docker-based routing:', error);
             throw error;
         }
     }
-    
-    async waitForNamespacedZeroTierReady(nsName, chrootPath, maxAttempts = 30) {
-        logger.info('Waiting for ZeroTier network to be ready in namespace...');
+
+    async setupDockerNetwork(batmanInterface) {
+        try {
+            logger.debug('Setting up Docker network for ZeroTier...');
+            
+            // Remove existing network if it exists
+            await this.executeCommand(`docker network rm ${this.dockerNetworkName} 2>/dev/null || true`);
+            
+            // Get batman interface subnet for Docker network
+            const batmanSubnet = await this.getBatmanSubnet(batmanInterface);
+            
+            // Create Docker bridge network that will be connected to batman
+            await this.executeCommand(`docker network create --driver bridge --subnet=${batmanSubnet} ${this.dockerNetworkName}`);
+            
+            // Get the Docker bridge interface name
+            const dockerBridge = await this.executeCommand(`docker network inspect ${this.dockerNetworkName} -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}'`);
+            const bridgeInterface = await this.executeCommand(`ip route | grep ${dockerBridge} | grep -o 'dev [^ ]*' | cut -d' ' -f2`);
+            
+            // Connect Docker bridge to batman interface via host routing
+            await this.setupBridgeRouting(bridgeInterface, batmanInterface);
+            
+            logger.debug('✅ Docker network setup complete');
+            
+        } catch (error) {
+            logger.error('Failed to setup Docker network:', error);
+            throw error;
+        }
+    }
+
+    async getBatmanSubnet(batmanInterface) {
+        try {
+            // Get batman interface IP and calculate a non-conflicting subnet for Docker
+            const batmanIp = await this.executeCommand(`ip route show dev ${batmanInterface} | head -1 | awk '{print $1}' || echo "172.30.0.0/16"`);
+            
+            // Use a different subnet that won't conflict
+            // If batman is 192.168.100.0/24, use 172.31.0.0/16 for Docker
+            return "172.31.0.0/16";
+            
+        } catch (error) {
+            logger.warn('Could not determine batman subnet, using default');
+            return "172.31.0.0/16";
+        }
+    }
+
+    async setupBridgeRouting(dockerBridge, batmanInterface) {
+        try {
+            logger.debug('Setting up routing between Docker bridge and batman interface...');
+            
+            // Enable IP forwarding
+            await this.executeCommand('echo 1 > /proc/sys/net/ipv4/ip_forward');
+            
+            // Add iptables rules to route traffic between Docker bridge and batman
+            await this.executeCommand(`iptables -A FORWARD -i ${dockerBridge} -o ${batmanInterface} -j ACCEPT 2>/dev/null || true`);
+            await this.executeCommand(`iptables -A FORWARD -i ${batmanInterface} -o ${dockerBridge} -j ACCEPT 2>/dev/null || true`);
+            
+            // NAT traffic from Docker containers through batman interface
+            await this.executeCommand(`iptables -t nat -A POSTROUTING -s 172.31.0.0/16 -o ${batmanInterface} -j MASQUERADE 2>/dev/null || true`);
+            
+            logger.debug('✅ Bridge routing setup complete');
+            
+        } catch (error) {
+            logger.error('Failed to setup bridge routing:', error);
+            throw error;
+        }
+    }
+
+    async startZeroTierContainer() {
+        try {
+            logger.debug('Starting ZeroTier Docker container...');
+            
+            // Stop and remove existing container
+            await this.executeCommand(`docker stop ${this.containerName} 2>/dev/null || true`);
+            await this.executeCommand(`docker rm ${this.containerName} 2>/dev/null || true`);
+            
+            // Start ZeroTier container with privileged mode and custom network
+            const dockerCmd = [
+                'docker', 'run', '-d',
+                '--name', this.containerName,
+                '--network', this.dockerNetworkName,
+                '--privileged',
+                '--cap-add=NET_ADMIN',
+                '--cap-add=SYS_ADMIN',
+                '--device=/dev/net/tun',
+                '-v', '/var/lib/zerotier-one:/var/lib/zerotier-one',
+                'zerotier/zerotier:latest'
+            ];
+            
+            await this.executeCommand(dockerCmd.join(' '));
+            
+            // Wait for container to start
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Verify container is running
+            const containerStatus = await this.executeCommand(`docker ps --filter name=${this.containerName} --format "{{.Status}}"`);
+            if (!containerStatus.includes('Up')) {
+                throw new Error('ZeroTier container failed to start');
+            }
+            
+            logger.debug('✅ ZeroTier container started successfully');
+            
+        } catch (error) {
+            logger.error('Failed to start ZeroTier container:', error);
+            throw error;
+        }
+    }
+
+    async joinZeroTierNetwork() {
+        try {
+            logger.info(`Joining ZeroTier network ${this.networkId}...`);
+            
+            // Join the network inside the container
+            const joinResult = await this.executeCommand(`docker exec ${this.containerName} zerotier-cli join ${this.networkId}`);
+            logger.debug(`ZeroTier join result: ${joinResult}`);
+            
+        } catch (error) {
+            logger.error('Failed to join ZeroTier network:', error);
+            throw error;
+        }
+    }
+
+    async waitForZeroTierReady(maxAttempts = 30) {
+        logger.info('Waiting for ZeroTier network to be ready...');
         
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                // First check if ZeroTier process is still running in namespace
-                const nsProcesses = await this.executeCommand(`ip netns exec ${nsName} ps aux | grep zerotier || echo "not found"`);
-                if (!nsProcesses.includes('zerotier-one')) {
-                    logger.warn('ZeroTier process not found in namespace, attempting to restart...');
-                    throw new Error('ZeroTier process died in namespace');
-                }
+                // Check ZeroTier status inside container
+                const infoOutput = await this.executeCommand(`docker exec ${this.containerName} zerotier-cli info`);
+                logger.debug(`ZeroTier info (attempt ${attempt}): ${infoOutput}`);
                 
-                // Check ZeroTier info to see if it's responding
-                let infoOutput;
-                try {
-                    infoOutput = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli info`);
-                    logger.debug(`ZeroTier info (attempt ${attempt}): ${infoOutput}`);
-                } catch (infoError) {
-                    logger.debug(`ZeroTier CLI not responding yet (attempt ${attempt}): ${infoError.message}`);
-                    
-                    // If we're past attempt 10 and CLI still not responding, something is wrong
-                    if (attempt > 10) {
-                        logger.warn('ZeroTier CLI not responding after 10 attempts, this may indicate a problem');
-                        // Don't continue waiting if CLI is completely unresponsive
-                        throw new Error('ZeroTier CLI unresponsive in namespace');
-                    }
-                    
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    continue;
-                }
-                
-                const networks = await this.getNamespacedNetworks(nsName, chrootPath);
+                const networks = await this.getDockerZeroTierNetworks();
                 logger.debug(`ZeroTier networks (attempt ${attempt}):`, networks);
                 
                 const targetNetwork = networks.find(n => n.id === this.networkId);
@@ -429,7 +279,7 @@ class ZeroTierManager {
                 if (targetNetwork && 
                     targetNetwork.status === 'OK' && 
                     targetNetwork.assignedAddresses.length > 0) {
-                    logger.info(`ZeroTier network ready in namespace with IP: ${targetNetwork.assignedAddresses[0]}`);
+                    logger.info(`ZeroTier network ready with IP: ${targetNetwork.assignedAddresses[0]}`);
                     this.zerotierInterface = targetNetwork.interface;
                     return targetNetwork;
                 }
@@ -444,34 +294,16 @@ class ZeroTierManager {
                 
             } catch (error) {
                 logger.debug(`ZeroTier check failed on attempt ${attempt}:`, error.message);
-                
-                // If we hit certain errors multiple times, give up early
-                if (error.message.includes('ZeroTier CLI unresponsive') || 
-                    error.message.includes('ZeroTier process died')) {
-                    throw error;
-                }
-                
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
         
-        // Final diagnostic before giving up
-        try {
-            logger.warn('ZeroTier network readiness timeout - running final diagnostics...');
-            const finalInfo = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli info 2>&1 || echo "CLI failed"`);
-            const finalNetworks = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli listnetworks 2>&1 || echo "listnetworks failed"`);
-            logger.warn(`Final ZeroTier info: ${finalInfo}`);
-            logger.warn(`Final ZeroTier networks: ${finalNetworks}`);
-        } catch (diagError) {
-            logger.warn('Failed to run final diagnostics:', diagError.message);
-        }
-        
-        throw new Error('ZeroTier network ready timeout in namespace - check network authorization on ZeroTier Central');
+        throw new Error('ZeroTier network ready timeout - check network authorization on ZeroTier Central');
     }
-    
-    async getNamespacedNetworks(nsName, chrootPath) {
+
+    async getDockerZeroTierNetworks() {
         try {
-            const output = await this.executeCommand(`ip netns exec ${nsName} chroot ${chrootPath} /usr/bin/zerotier-cli listnetworks`);
+            const output = await this.executeCommand(`docker exec ${this.containerName} zerotier-cli listnetworks`);
             logger.debug(`Raw ZeroTier listnetworks output: ${output}`);
             
             const networks = [];
@@ -497,26 +329,27 @@ class ZeroTierManager {
             return networks;
             
         } catch (error) {
-            logger.error('Failed to get namespaced ZeroTier networks:', error);
+            logger.error('Failed to get Docker ZeroTier networks:', error);
             return [];
         }
     }
     
     async getStatus() {
         try {
-            // If we have namespace info, use namespaced commands
-            if (this.nsName && this.chrootPath) {
-                const networks = await this.getNamespacedNetworks(this.nsName, this.chrootPath);
+            // Check if Docker container is running
+            const containerStatus = await this.executeCommand(`docker ps --filter name=${this.containerName} --format "{{.Status}}" 2>/dev/null || echo "not running"`);
+            
+            if (!containerStatus.includes('Up')) {
                 return {
-                    online: networks.length > 0 && networks.some(n => n.status === 'OK'),
-                    networks: networks
+                    online: false,
+                    networks: []
                 };
             }
             
-            // Otherwise return offline status
+            const networks = await this.getDockerZeroTierNetworks();
             return {
-                online: false,
-                networks: []
+                online: networks.length > 0 && networks.some(n => n.status === 'OK'),
+                networks: networks
             };
             
         } catch (error) {
@@ -532,9 +365,11 @@ class ZeroTierManager {
         try {
             logger.info('Attempting to reconnect ZeroTier...');
             
-            // For chroot-based setup, just check if it's still running
-            if (this.zerotierProcess && !this.zerotierProcess.killed) {
-                logger.debug('ZeroTier process still running, checking network status...');
+            // Check if container is still running
+            const containerStatus = await this.executeCommand(`docker ps --filter name=${this.containerName} --format "{{.Status}}" 2>/dev/null || echo "not running"`);
+            
+            if (containerStatus.includes('Up')) {
+                logger.debug('ZeroTier container still running, checking network status...');
                 const status = await this.getStatus();
                 if (status.online) {
                     logger.info('ZeroTier reconnection successful');
@@ -542,10 +377,10 @@ class ZeroTierManager {
                 }
             }
             
-            // If process died or not connected, restart it
-            logger.info('Restarting ZeroTier chroot setup...');
-            await this.cleanupChrootRouting();
-            await this.configureChrootBasedRouting();
+            // If container died or not connected, restart it
+            logger.info('Restarting ZeroTier Docker setup...');
+            await this.cleanupDockerRouting();
+            await this.configureDockerBasedRouting();
             
         } catch (error) {
             logger.error('Failed to reconnect ZeroTier:', error);
@@ -553,64 +388,26 @@ class ZeroTierManager {
         }
     }
 
-    async cleanupChrootRouting() {
+    async cleanupDockerRouting() {
         try {
-            logger.info('Cleaning up chroot-based routing...');
+            logger.info('Cleaning up Docker-based routing...');
             
-            // Kill ZeroTier subprocess if it exists
-            if (this.zerotierProcess && !this.zerotierProcess.killed) {
-                logger.debug('Terminating ZeroTier subprocess...');
-                this.zerotierProcess.kill('SIGTERM');
-                
-                // Give it a moment to shut down gracefully
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                
-                // Force kill if still running
-                if (!this.zerotierProcess.killed) {
-                    this.zerotierProcess.kill('SIGKILL');
-                }
-            }
+            // Stop and remove ZeroTier container
+            await this.executeCommand(`docker stop ${this.containerName} 2>/dev/null || true`);
+            await this.executeCommand(`docker rm ${this.containerName} 2>/dev/null || true`);
             
-            // Kill any remaining ZeroTier processes using multiple methods
-            try {
-                await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
-            } catch (error) {
-                try {
-                    await this.executeCommand('killall zerotier-one 2>/dev/null || true');
-                } catch (error2) {
-                    try {
-                        const pids = await this.executeCommand('pgrep -f zerotier-one 2>/dev/null || echo ""');
-                        if (pids.trim()) {
-                            await this.executeCommand(`kill -TERM ${pids.trim().split('\n').join(' ')} 2>/dev/null || true`);
-                        }
-                    } catch (error3) {
-                        logger.debug('All process killing methods failed in cleanup, continuing...');
-                    }
-                }
-            }
+            // Remove Docker network
+            await this.executeCommand(`docker network rm ${this.dockerNetworkName} 2>/dev/null || true`);
             
-            // Clean up network namespace
-            const nsName = this.nsName || 'zt-batman';
-            await this.executeCommand(`ip netns del ${nsName} 2>/dev/null || true`);
+            // Clean up iptables rules (try to remove, ignore errors)
+            await this.executeCommand('iptables -D FORWARD -i br-* -o bat0 -j ACCEPT 2>/dev/null || true');
+            await this.executeCommand('iptables -D FORWARD -i bat0 -o br-* -j ACCEPT 2>/dev/null || true');
+            await this.executeCommand('iptables -t nat -D POSTROUTING -s 172.31.0.0/16 -o bat0 -j MASQUERADE 2>/dev/null || true');
             
-            // Clean up veth and bridge
-            await this.executeCommand('ip link del veth-zt-host 2>/dev/null || true');
-            await this.executeCommand('ip link del br-zt-batman 2>/dev/null || true');
-            
-            // Unmount and clean up chroot
-            const chrootPath = this.chrootPath || '/var/lib/zerotier-chroot';
-            await this.executeCommand(`umount ${chrootPath}/proc ${chrootPath}/sys 2>/dev/null || true`);
-            await this.executeCommand(`rm -rf ${chrootPath} 2>/dev/null || true`);
-            
-            // Clear process references
-            this.zerotierProcess = null;
-            this.chrootPath = null;
-            this.nsName = null;
-            
-            logger.info('✅ Chroot routing cleanup completed');
+            logger.info('✅ Docker routing cleanup completed');
             
         } catch (error) {
-            logger.error('Failed to cleanup chroot routing:', error);
+            logger.error('Failed to cleanup Docker routing:', error);
         }
     }
 
@@ -618,8 +415,8 @@ class ZeroTierManager {
         logger.info('Cleaning up ZeroTier...');
         
         try {
-            // Clean up chroot-based routing
-            await this.cleanupChrootRouting();
+            // Clean up Docker-based routing
+            await this.cleanupDockerRouting();
             
             logger.info('✅ ZeroTier cleanup completed');
             
