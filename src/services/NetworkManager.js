@@ -436,16 +436,16 @@ class NetworkManager {
                 const macPattern = /([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})/;
                 const match = trimmedLine.match(macPattern);
                 
-                if (match && trimmedLine.includes('(') && trimmedLine.includes(')')) {
+                if (match) {
                     const parts = trimmedLine.split(/\s+/);
-                    if (parts.length >= 4) {
+                    // if (parts.length >= 4) {
                         neighbors.push({
                             address: match[1], // Use the MAC address from regex match
-                            lastSeen: parts[1],
-                            quality: parts[2],
-                            interface: parts[3]
+                            lastSeen: parts[2],
+                            // quality: parts[2],
+                            interface: parts[0]
                         });
-                    }
+                    // }
                 }
             }
             
@@ -549,8 +549,6 @@ class NetworkManager {
             // Get interface statistics
             const neighbors = await this.getBatmanNeighbors();
             const routes = await this.getBatmanRoutes();
-
-            console.log(isUp, batmanWorking, version, neighbors, routes);
             
             return {
                 active: isUp && batmanWorking, // More robust check
