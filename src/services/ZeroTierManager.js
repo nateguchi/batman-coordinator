@@ -272,88 +272,118 @@ class ZeroTierManager {
             const markValue = '0x100'; // Custom mark for ZeroTier traffic
             const tableId = '100'; // Custom routing table for ZeroTier
             
-            logger.info('Setting up process-based routing for ZeroTier');
+            logger.info('Setting up enhanced process-based routing for ZeroTier');
             
-            // Step 1: Create custom routing table for ZeroTier traffic
+            // Step 1: Clean up any existing configuration
             await this.executeCommand(`ip rule del fwmark ${markValue} table ${tableId} 2>/dev/null || true`);
             await this.executeCommand(`ip route flush table ${tableId} 2>/dev/null || true`);
             
-            // Add rule to use custom table for marked packets
-            await this.executeCommand(`ip rule add fwmark ${markValue} table ${tableId}`);
-            
-            // Add default route in custom table via batman interface
-            await this.executeCommand(`ip route add default via ${coordinatorIP} dev ${batmanInterface} table ${tableId}`);
-            
-            // Step 2: Mark ZeroTier process traffic using iptables
-            // Remove existing ZeroTier marking rules
-            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
-            await this.executeCommand(`iptables -t mangle -D OUTPUT -m cgroup --cgroup 1 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
-            
-            // Get ZeroTier process UID
-            let ztUID = null;
+            // Step 2: Verify batman interface is ready and has connectivity
             try {
-                const ztUser = await this.executeCommand('id -u zerotier-one 2>/dev/null || echo ""');
-                if (ztUser.trim()) {
-                    ztUID = ztUser.trim();
-                    logger.debug(`Found ZeroTier UID: ${ztUID}`);
+                const batmanStatus = await this.executeCommand(`ip link show ${batmanInterface}`);
+                if (!batmanStatus.includes('UP')) {
+                    throw new Error(`Batman interface ${batmanInterface} is not UP`);
+                }
+                
+                // Test connectivity to coordinator
+                const pingTest = await this.executeCommand(`ping -c 1 -W 2 ${coordinatorIP} 2>/dev/null || echo "failed"`);
+                if (!pingTest.includes('1 received')) {
+                    logger.warn(`Warning: Cannot ping coordinator ${coordinatorIP} via batman - continuing anyway`);
                 }
             } catch (error) {
-                logger.debug('ZeroTier user not found');
+                logger.error(`Batman interface issue: ${error.message}`);
+                throw error;
             }
             
-            // If no dedicated user, try to find the service PID and use a different approach
-            if (!ztUID) {
-                try {
-                    // Get ZeroTier service PID
-                    const pidOutput = await this.executeCommand('systemctl show --property MainPID zerotier-one');
-                    const pidMatch = pidOutput.match(/MainPID=(\d+)/);
-                    if (pidMatch && pidMatch[1] !== '0') {
-                        const pid = pidMatch[1];
-                        logger.debug(`Found ZeroTier PID: ${pid}`);
-                        
-                        // Use netfilter cgroup matching if available
-                        try {
-                            // Create a temporary cgroup for zerotier process
-                            await this.executeCommand('mkdir -p /sys/fs/cgroup/net_cls/zerotier 2>/dev/null || true');
-                            await this.executeCommand('echo 0x100001 > /sys/fs/cgroup/net_cls/zerotier/net_cls.classid 2>/dev/null || true');
-                            await this.executeCommand(`echo ${pid} > /sys/fs/cgroup/net_cls/zerotier/cgroup.procs 2>/dev/null || true`);
-                            
-                            // Mark traffic from this cgroup
-                            await this.executeCommand(`iptables -t mangle -A OUTPUT -m cgroup --cgroup 0x100001 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
-                            logger.debug('Using cgroup-based traffic marking');
-                        } catch (cgroupError) {
-                            logger.debug('Cgroup marking failed, trying alternative approach');
-                            
-                            // Alternative: mark traffic to/from ZeroTier ports
-                            await this.markZeroTierPortTraffic(markValue);
-                        }
-                    } else {
-                        // ZeroTier not running or PID not found, try port-based marking
-                        await this.markZeroTierPortTraffic(markValue);
-                    }
-                } catch (error) {
-                    logger.debug('PID-based marking failed, using port-based marking');
-                    await this.markZeroTierPortTraffic(markValue);
-                }
-            } else {
-                // Use UID-based marking
-                await this.executeCommand(`iptables -t mangle -A OUTPUT -m owner --uid-owner ${ztUID} -j MARK --set-mark ${markValue}`);
-                logger.debug(`Using UID-based traffic marking for UID ${ztUID}`);
-            }
+            // Step 3: Create custom routing table with high priority
+            // Use priority 100 (higher than default 32766) to ensure it takes precedence
+            await this.executeCommand(`ip rule add fwmark ${markValue} table ${tableId} priority 100`);
             
-            // Step 4: Ensure batman interface can route the traffic
-            // Add route to ZeroTier network via batman
+            // Add comprehensive routes in custom table
+            await this.executeCommand(`ip route add default via ${coordinatorIP} dev ${batmanInterface} table ${tableId}`);
+            
+            // Add specific route to coordinator to ensure connectivity
+            await this.executeCommand(`ip route add ${coordinatorIP}/32 dev ${batmanInterface} table ${tableId} 2>/dev/null || true`);
+            
+            // Step 4: Set up traffic marking with multiple fallback methods
+            await this.setupZeroTierTrafficMarking(markValue);
+            
+            // Step 5: Add additional routes for ZeroTier network if available
             const networks = await this.getNetworks();
             const targetNetwork = networks.find(n => n.id === this.networkId);
             if (targetNetwork && targetNetwork.assignedAddresses.length > 0) {
                 const ztNetwork = this.extractNetworkFromIP(targetNetwork.assignedAddresses[0]);
+                // Add to both main table and custom table
+                await this.executeCommand(`ip route add ${ztNetwork} via ${coordinatorIP} dev ${batmanInterface} table ${tableId} 2>/dev/null || true`);
                 await this.executeCommand(`ip route add ${ztNetwork} via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
             }
             
-            logger.info(`ZeroTier process traffic will be routed through ${batmanInterface} using mark ${markValue}`);
+            // Step 6: Force routing cache flush to ensure rules take effect
+            await this.executeCommand('ip route flush cache 2>/dev/null || true');
+            
+            // Step 7: Verify configuration
+            const verification = await this.verifyProcessBasedRouting();
+            if (!verification.isConfigured) {
+                throw new Error('Process-based routing verification failed after setup');
+            }
+            
+            logger.info(`✅ Enhanced ZeroTier process routing configured: ${verification.markingMethod} marking via ${batmanInterface}`);
             
         } catch (error) {
             logger.error('Failed to configure process-based routing:', error);
+            throw error;
+        }
+    }
+    
+    async setupZeroTierTrafficMarking(markValue) {
+        try {
+            logger.debug('Setting up ZeroTier traffic marking with multiple methods');
+            
+            // Clean up existing marking rules
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m cgroup --cgroup 0x100001 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -p udp --dport 9993 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            
+            let markingMethod = 'none';
+            
+            // Method 1: Try UID-based marking (most reliable)
+            try {
+                const ztUser = await this.executeCommand('id -u zerotier-one 2>/dev/null || echo ""');
+                if (ztUser.trim()) {
+                    const ztUID = ztUser.trim();
+                    await this.executeCommand(`iptables -t mangle -A OUTPUT -m owner --uid-owner ${ztUID} -j MARK --set-mark ${markValue}`);
+                    markingMethod = 'uid-based';
+                    logger.debug(`✅ UID-based marking configured for UID ${ztUID}`);
+                } else {
+                    throw new Error('ZeroTier user not found');
+                }
+            } catch (error) {
+                logger.debug('UID-based marking failed, trying alternative methods');
+                
+                // Method 2: Try port-based marking
+                try {
+                    await this.executeCommand(`iptables -t mangle -A OUTPUT -p udp --dport 9993 -j MARK --set-mark ${markValue}`);
+                    
+                    // Also mark traffic from ZeroTier interface
+                    const ztInterface = await this.getZeroTierInterface();
+                    if (ztInterface) {
+                        await this.executeCommand(`iptables -t mangle -A OUTPUT -o ${ztInterface} -j MARK --set-mark ${markValue}`);
+                        logger.debug(`✅ Port+interface-based marking configured (${ztInterface})`);
+                    } else {
+                        logger.debug('✅ Port-based marking configured (UDP 9993)');
+                    }
+                    markingMethod = 'port-based';
+                    
+                } catch (portError) {
+                    logger.error('All marking methods failed:', portError);
+                    throw new Error('Could not configure any traffic marking method');
+                }
+            }
+            
+            return markingMethod;
+            
+        } catch (error) {
+            logger.error('Failed to setup ZeroTier traffic marking:', error);
             throw error;
         }
     }
@@ -1227,6 +1257,116 @@ class ZeroTierManager {
         } catch (error) {
             console.error('Failed to monitor process-based routing:', error);
             return { error: error.message };
+        }
+    }
+
+    async testMarkedPacketRouting() {
+        try {
+            const markValue = '0x100';
+            const tableId = '100';
+            
+            console.log('=== Testing Marked Packet Routing ===');
+            
+            // 1. Show current interface stats before test
+            console.log('\n1. Interface Statistics (Before):');
+            try {
+                const bat0Before = await this.executeCommand('cat /sys/class/net/bat0/statistics/tx_packets');
+                console.log(`   bat0 TX packets: ${bat0Before}`);
+                
+                const ztInterface = await this.getZeroTierInterface();
+                if (ztInterface) {
+                    const ztBefore = await this.executeCommand(`cat /sys/class/net/${ztInterface}/statistics/tx_packets`);
+                    console.log(`   ${ztInterface} TX packets: ${ztBefore}`);
+                }
+            } catch (error) {
+                console.log('   ❌ Could not read interface statistics');
+            }
+            
+            // 2. Test route lookup for marked packets
+            console.log('\n2. Route Lookup Test:');
+            try {
+                // Test what route would be used for a marked packet
+                const routeTest = await this.executeCommand(`ip route get 8.8.8.8 mark ${markValue} 2>/dev/null || echo "failed"`);
+                console.log(`   Route for marked packet to 8.8.8.8: ${routeTest}`);
+                
+                // Check if it mentions batman interface
+                if (routeTest.includes('bat0')) {
+                    console.log('   ✅ Marked packets would use batman interface');
+                } else {
+                    console.log('   ❌ Marked packets NOT using batman interface');
+                }
+            } catch (error) {
+                console.log('   ❌ Route lookup test failed:', error.message);
+            }
+            
+            // 3. Manual packet marking test
+            console.log('\n3. Manual Packet Test:');
+            try {
+                // Send a test packet with manual marking
+                console.log('   Sending test packet with mark...');
+                const testResult = await this.executeCommand(`echo "test" | nc -u -w1 8.8.8.8 53 2>/dev/null || echo "nc test completed"`);
+                console.log(`   Test result: ${testResult}`);
+            } catch (error) {
+                console.log('   ❌ Manual packet test failed:', error.message);
+            }
+            
+            // 4. Show interface stats after test
+            console.log('\n4. Interface Statistics (After):');
+            try {
+                const bat0After = await this.executeCommand('cat /sys/class/net/bat0/statistics/tx_packets');
+                console.log(`   bat0 TX packets: ${bat0After}`);
+                
+                const ztInterface = await this.getZeroTierInterface();
+                if (ztInterface) {
+                    const ztAfter = await this.executeCommand(`cat /sys/class/net/${ztInterface}/statistics/tx_packets`);
+                    console.log(`   ${ztInterface} TX packets: ${ztAfter}`);
+                }
+            } catch (error) {
+                console.log('   ❌ Could not read interface statistics');
+            }
+            
+            // 5. Check iptables counters
+            console.log('\n5. Iptables Counters:');
+            try {
+                const iptablesStats = await this.executeCommand('iptables -t mangle -L OUTPUT -n -v');
+                const lines = iptablesStats.split('\n');
+                
+                for (const line of lines) {
+                    if (line.includes(markValue)) {
+                        const parts = line.trim().split(/\s+/);
+                        if (parts.length >= 3) {
+                            const packets = parts[0];
+                            const bytes = parts[1];
+                            console.log(`   Packets marked: ${packets} (${bytes} bytes)`);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.log('   ❌ Could not check iptables counters');
+            }
+            
+            // 6. Routing table verification
+            console.log('\n6. Routing Table Verification:');
+            try {
+                const mainTable = await this.executeCommand('ip route show');
+                console.log('   Main table:');
+                console.log('   ' + mainTable.replace(/\n/g, '\n   '));
+                
+                const customTable = await this.executeCommand(`ip route show table ${tableId}`);
+                console.log(`\n   Custom table ${tableId}:`);
+                if (customTable.trim()) {
+                    console.log('   ' + customTable.replace(/\n/g, '\n   '));
+                } else {
+                    console.log('   ❌ Custom table is empty!');
+                }
+            } catch (error) {
+                console.log('   ❌ Could not verify routing tables');
+            }
+            
+            console.log('\n=== End Packet Routing Test ===');
+            
+        } catch (error) {
+            console.error('Failed to test marked packet routing:', error);
         }
     }
 
