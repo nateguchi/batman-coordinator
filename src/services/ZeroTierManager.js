@@ -393,13 +393,14 @@ class ZeroTierManager {
         try {
             const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
             
-            logger.info('Setting up node to route all internet traffic through coordinator');
+            logger.info('Adding batman route to coordinator with high metric (non-default)');
             
-            // Remove any existing default routes (except local interfaces)
-            await this.executeCommand('ip route del default 2>/dev/null || true');
+            // Remove any existing default route via batman (we don't want it as default)
+            await this.executeCommand(`ip route del default via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
             
-            // Set coordinator as default gateway via batman interface
-            await this.executeCommand(`ip route add default via ${coordinatorIP} dev ${batmanInterface} metric 100`);
+            // Add route to coordinator via batman interface with HIGH metric (low priority, non-default)
+            // This keeps the route available but doesn't make it the default
+            await this.executeCommand(`ip route add default via ${coordinatorIP} dev ${batmanInterface} metric 1000`);
             
             // Ensure we can still reach local mesh network
             const meshSubnet = process.env.MESH_SUBNET || '192.168.100.0/24';
