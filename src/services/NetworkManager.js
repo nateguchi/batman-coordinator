@@ -354,7 +354,7 @@ class NetworkManager {
         }
     }
 
-    async waitForBatmanIP(maxAttempts = 120) {
+    async waitForBatmanIP(maxAttempts = 30) {
         logger.info(`Waiting for IP assignment on ${this.batmanInterface}...`);
         
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
