@@ -258,6 +258,13 @@ class NetworkManager {
                 } catch (error) {
                     logger.warn('Failed to setup batman gateway:', error.message);
                 }
+            } else {
+                // Configure gateway mode for mesh nodes (client mode)
+                try {
+                    await this.setupBatmanGatewayClient();
+                } catch (error) {
+                    logger.warn('Failed to setup batman gateway client:', error.message);
+                }
             }
             
             logger.info('Batman-adv settings optimized');
@@ -295,6 +302,26 @@ class NetworkManager {
             
         } catch (error) {
             logger.error('Failed to setup batman gateway:', error);
+            throw error;
+        }
+    }
+
+    async setupBatmanGatewayClient() {
+        logger.info('Configuring batman-adv gateway client mode...');
+        
+        try {
+            // Set gateway mode to client (discovers and uses batman gateways)
+            await this.executeCommand(`batctl meshif ${this.batmanInterface} gw_mode client`);
+            logger.debug('Set batman gateway mode to client');
+            
+            // Enable IP forwarding for mesh nodes as well (needed for ZeroTier routing)
+            await this.executeCommand('echo 1 > /proc/sys/net/ipv4/ip_forward');
+            logger.debug('Enabled IP forwarding');
+            
+            logger.info('Batman gateway client configured successfully');
+            
+        } catch (error) {
+            logger.error('Failed to setup batman gateway client:', error);
             throw error;
         }
     }
@@ -438,14 +465,13 @@ class NetworkManager {
                 
                 if (match) {
                     const parts = trimmedLine.split(/\s+/);
-                    // if (parts.length >= 4) {
+                    if (parts.length >= 3) {
                         neighbors.push({
                             address: match[1], // Use the MAC address from regex match
-                            lastSeen: parts[2],
-                            // quality: parts[2],
-                            interface: parts[0]
+                            lastSeen: parts[2], // last-seen is typically the 3rd column
+                            interface: parts[0] // interface is typically the 1st column
                         });
-                    // }
+                    }
                 }
             }
             
@@ -549,8 +575,6 @@ class NetworkManager {
             // Get interface statistics
             const neighbors = await this.getBatmanNeighbors();
             const routes = await this.getBatmanRoutes();
-
-            console.log(isUp, batmanWorking, version, neighbors, routes);
             
             return {
                 active: isUp && batmanWorking, // More robust check
