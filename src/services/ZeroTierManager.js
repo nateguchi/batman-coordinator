@@ -1077,6 +1077,194 @@ class ZeroTierManager {
     getInterface() {
         return this.zerotierInterface;
     }
+
+    async monitorProcessBasedRouting() {
+        try {
+            const markValue = '0x100';
+            const tableId = '100';
+            
+            console.log('=== Process-Based Routing Status ===');
+            
+            // 1. Check if iptables mangle rules exist
+            console.log('\n1. Iptables Mangle Rules (OUTPUT chain):');
+            try {
+                const iptablesOutput = await this.executeCommand('iptables -t mangle -L OUTPUT -n -v --line-numbers');
+                console.log(iptablesOutput);
+                
+                // Check for specific ZeroTier markings
+                const hasUidRule = iptablesOutput.includes('zerotier-one') && iptablesOutput.includes(markValue);
+                const hasPortRule = iptablesOutput.includes('9993') && iptablesOutput.includes(markValue);
+                const hasCgroupRule = iptablesOutput.includes('cgroup') && iptablesOutput.includes(markValue);
+                
+                console.log(`   ✓ UID-based marking: ${hasUidRule ? 'ENABLED' : 'DISABLED'}`);
+                console.log(`   ✓ Port-based marking: ${hasPortRule ? 'ENABLED' : 'DISABLED'}`);
+                console.log(`   ✓ Cgroup-based marking: ${hasCgroupRule ? 'ENABLED' : 'DISABLED'}`);
+                
+            } catch (error) {
+                console.log('   ❌ Failed to check iptables rules:', error.message);
+            }
+            
+            // 2. Check IP routing rules for fwmark
+            console.log('\n2. IP Routing Rules:');
+            try {
+                const ipRulesOutput = await this.executeCommand('ip rule show');
+                console.log(ipRulesOutput);
+                
+                const hasFwmarkRule = ipRulesOutput.includes(`fwmark ${markValue}`) && ipRulesOutput.includes(`lookup ${tableId}`);
+                console.log(`   ✓ Fwmark rule for ${markValue}: ${hasFwmarkRule ? 'ENABLED' : 'DISABLED'}`);
+                
+            } catch (error) {
+                console.log('   ❌ Failed to check IP rules:', error.message);
+            }
+            
+            // 3. Check custom routing table
+            console.log(`\n3. Custom Routing Table ${tableId}:`);
+            try {
+                const tableOutput = await this.executeCommand(`ip route show table ${tableId}`);
+                if (tableOutput.trim()) {
+                    console.log(tableOutput);
+                    const hasDefaultRoute = tableOutput.includes('default');
+                    console.log(`   ✓ Default route via batman: ${hasDefaultRoute ? 'CONFIGURED' : 'MISSING'}`);
+                } else {
+                    console.log('   ❌ Table is empty or does not exist');
+                }
+            } catch (error) {
+                console.log('   ❌ Failed to check routing table:', error.message);
+            }
+            
+            // 4. Check ZeroTier process info
+            console.log('\n4. ZeroTier Process Information:');
+            try {
+                // Check if zerotier-one user exists
+                const ztUID = await this.executeCommand('id -u zerotier-one 2>/dev/null || echo "not-found"');
+                if (ztUID !== 'not-found') {
+                    console.log(`   ✓ ZeroTier UID: ${ztUID}`);
+                } else {
+                    console.log('   ⚠ ZeroTier user not found');
+                }
+                
+                // Check ZeroTier service PID
+                const pidOutput = await this.executeCommand('systemctl show --property MainPID zerotier-one');
+                const pidMatch = pidOutput.match(/MainPID=(\d+)/);
+                if (pidMatch && pidMatch[1] !== '0') {
+                    console.log(`   ✓ ZeroTier PID: ${pidMatch[1]}`);
+                } else {
+                    console.log('   ⚠ ZeroTier service not running or no PID found');
+                }
+                
+            } catch (error) {
+                console.log('   ❌ Failed to check ZeroTier process:', error.message);
+            }
+            
+            // 5. Traffic statistics for marked packets
+            console.log('\n5. Traffic Statistics:');
+            try {
+                // Check if any packets have been marked
+                const iptablesStats = await this.executeCommand('iptables -t mangle -L OUTPUT -n -v');
+                const lines = iptablesStats.split('\n');
+                
+                for (const line of lines) {
+                    if (line.includes(markValue) && (line.includes('zerotier') || line.includes('9993') || line.includes('cgroup'))) {
+                        const parts = line.trim().split(/\s+/);
+                        if (parts.length >= 2) {
+                            const packets = parts[0];
+                            const bytes = parts[1];
+                            console.log(`   ✓ Marked packets: ${packets}, bytes: ${bytes}`);
+                        }
+                    }
+                }
+                
+                // Check custom table usage (if available)
+                const tableStats = await this.executeCommand(`ip route show table ${tableId} 2>/dev/null || echo ""`);
+                if (tableStats.includes('default')) {
+                    console.log('   ✓ Custom routing table has routes configured');
+                }
+                
+            } catch (error) {
+                console.log('   ❌ Failed to get traffic statistics:', error.message);
+            }
+            
+            // 6. Test if rules would work
+            console.log('\n6. Configuration Test:');
+            const status = await this.verifyProcessBasedRouting();
+            console.log(`   ✓ Overall status: ${status.isConfigured ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
+            console.log(`   ✓ Marking method: ${status.markingMethod}`);
+            console.log(`   ✓ Has marking rule: ${status.hasMarkingRule}`);
+            console.log(`   ✓ Has routing rule: ${status.hasRoutingRule}`);
+            console.log(`   ✓ Has custom routes: ${status.hasCustomRoutes}`);
+            
+            console.log('\n=== End Process-Based Routing Status ===');
+            
+            return status;
+            
+        } catch (error) {
+            console.error('Failed to monitor process-based routing:', error);
+            return { error: error.message };
+        }
+    }
+
+    async showTrafficFlow() {
+        try {
+            console.log('=== ZeroTier Traffic Flow Analysis ===');
+            
+            // 1. Show all network interfaces
+            console.log('\n1. Network Interfaces:');
+            const interfaces = await this.executeCommand('ip link show | grep -E "(bat0|zt|eth|wlan)"');
+            console.log(interfaces);
+            
+            // 2. Show routing table
+            console.log('\n2. Main Routing Table:');
+            const routes = await this.executeCommand('ip route show');
+            console.log(routes);
+            
+            // 3. Show ZeroTier status
+            console.log('\n3. ZeroTier Status:');
+            const ztStatus = await this.getStatus();
+            console.log(`   Online: ${ztStatus.online}`);
+            console.log(`   Networks: ${ztStatus.networks.length}`);
+            if (ztStatus.networks.length > 0) {
+                ztStatus.networks.forEach(net => {
+                    console.log(`   - ${net.id}: ${net.status}, IPs: ${net.assignedAddresses.join(', ')}`);
+                });
+            }
+            
+            // 4. Test connectivity paths
+            console.log('\n4. Connectivity Tests:');
+            
+            // Test ping to coordinator via batman (if we're a node)
+            try {
+                const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
+                const pingResult = await this.executeCommand(`ping -c 1 -W 2 ${coordinatorIP} 2>/dev/null || echo "failed"`);
+                const success = pingResult.includes('1 received');
+                console.log(`   ✓ Batman mesh connectivity: ${success ? 'SUCCESS' : 'FAILED'}`);
+            } catch (error) {
+                console.log('   ❌ Batman connectivity test failed');
+            }
+            
+            // Test internet connectivity
+            try {
+                const internetResult = await this.executeCommand(`ping -c 1 -W 3 8.8.8.8 2>/dev/null || echo "failed"`);
+                const success = internetResult.includes('1 received');
+                console.log(`   ✓ Internet connectivity: ${success ? 'SUCCESS' : 'FAILED'}`);
+            } catch (error) {
+                console.log('   ❌ Internet connectivity test failed');
+            }
+            
+            // 5. Show active connections
+            console.log('\n5. Active Network Connections:');
+            try {
+                const connections = await this.executeCommand('ss -tuln | head -20');
+                console.log(connections);
+            } catch (error) {
+                console.log('   ❌ Failed to show connections');
+            }
+            
+            console.log('\n=== End Traffic Flow Analysis ===');
+            
+        } catch (error) {
+            console.error('Failed to analyze traffic flow:', error);
+        }
+    }
 }
 
 module.exports = ZeroTierManager;
