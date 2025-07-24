@@ -167,10 +167,10 @@ The SecurityManager provides targeted protection for the batman mesh network whi
 ### Network Isolation
 - **Security focus**: Prevents unauthorized users from accessing internet through the mesh network
 - **Node access**: All nodes have full ethernet access for legitimate operations and management
-- **ZeroTier routing**: Mesh nodes MUST connect to ZeroTier through batman mesh (blocked on ethernet)
+- **ZeroTier routing**: Mesh nodes use process-based routing to force ZeroTier traffic through batman mesh
 - **Mesh isolation**: Batman mesh traffic is isolated and cannot be forwarded to ethernet interfaces
 - **Coordinator gateway**: Only coordinator provides authorized internet access to specific mesh services
-- **Policy routing**: ZeroTier traffic on mesh nodes is marked and routed through batman interface
+- **Process marking**: ZeroTier process traffic is marked using iptables and routed through custom routing table via batman interface
 
 ### Encryption
 - ZeroTier provides end-to-end encryption
@@ -269,6 +269,56 @@ echo 1000 > /sys/class/net/bat0/mesh/orig_interval
 ```bash
 # Enable flow hashing for better performance
 echo 'net.core.rps_sock_flow_entries = 32768' >> /etc/sysctl.conf
+```
+
+## Troubleshooting
+
+### ZeroTier Connectivity Issues
+
+#### Check Process-Based Routing (Mesh Nodes)
+```bash
+# Test the routing configuration script
+node test-zerotier-routing.js
+
+# Check current network state
+node test-zerotier-routing.js state
+
+# Verify iptables marking rules
+sudo iptables -t mangle -L OUTPUT -n -v | grep zerotier
+
+# Check custom routing table
+ip route show table 100
+
+# Verify IP rules
+ip rule show | grep 0x100
+```
+
+#### Debug ZeroTier Routing
+```bash
+# Enable debug logging
+LOG_LEVEL=debug npm run mesh-node
+
+# Manual routing verification
+sudo iptables -t mangle -A OUTPUT -m owner --cmd-owner zerotier-one -j MARK --set-mark 0x100
+ip rule add fwmark 0x100 table 100
+ip route add default via 192.168.100.1 dev bat0 table 100
+```
+
+#### Common Issues
+- **ZeroTier shows "[B.A.T.M.A.N." as node name**: Fixed in batman-adv output parsing
+- **ZeroTier not connecting through mesh**: Check if process-based routing is configured
+- **Missing iptables rules**: Ensure script runs with root privileges
+- **Custom routing table empty**: Verify batman interface has valid gateway IP
+
+### Batman-adv Issues
+```bash
+# Check batman status
+batctl meshif bat0 neighbors
+batctl meshif bat0 originators
+
+# Verify interface configuration
+ip link show bat0
+iw wlan1 info
 ```
 
 ## Contributing

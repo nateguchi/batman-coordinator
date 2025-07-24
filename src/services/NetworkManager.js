@@ -286,11 +286,29 @@ class NetworkManager {
             
             const lines = output.split('\n');
             for (const line of lines) {
-                if (line.includes('(') && line.includes(')')) {
-                    const parts = line.trim().split(/\s+/);
+                const trimmedLine = line.trim();
+                
+                // Skip empty lines, header lines, and lines containing B.A.T.M.A.N.
+                if (!trimmedLine || 
+                    trimmedLine.includes('B.A.T.M.A.N.') ||
+                    trimmedLine.includes('Neighbor') ||
+                    trimmedLine.includes('Originator') ||
+                    trimmedLine.includes('---') ||
+                    trimmedLine.includes('IF') ||
+                    trimmedLine.startsWith('[') ||
+                    trimmedLine.includes('No batman nodes')) {
+                    continue;
+                }
+                
+                // Look for lines with MAC addresses (format: XX:XX:XX:XX:XX:XX)
+                const macPattern = /([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})/;
+                const match = trimmedLine.match(macPattern);
+                
+                if (match && trimmedLine.includes('(') && trimmedLine.includes(')')) {
+                    const parts = trimmedLine.split(/\s+/);
                     if (parts.length >= 4) {
                         neighbors.push({
-                            address: parts[0],
+                            address: match[1], // Use the MAC address from regex match
                             lastSeen: parts[1],
                             quality: parts[2],
                             interface: parts[3]
@@ -332,11 +350,28 @@ class NetworkManager {
             
             const lines = output.split('\n');
             for (const line of lines) {
-                if (line.includes('(') && line.includes(')')) {
-                    const parts = line.trim().split(/\s+/);
+                const trimmedLine = line.trim();
+                
+                // Skip empty lines, header lines, and lines containing B.A.T.M.A.N.
+                if (!trimmedLine || 
+                    trimmedLine.includes('B.A.T.M.A.N.') ||
+                    trimmedLine.includes('Originator') ||
+                    trimmedLine.includes('---') ||
+                    trimmedLine.includes('IF') ||
+                    trimmedLine.startsWith('[') ||
+                    trimmedLine.includes('No batman nodes')) {
+                    continue;
+                }
+                
+                // Look for lines with MAC addresses (format: XX:XX:XX:XX:XX:XX)
+                const macPattern = /([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})/;
+                const match = trimmedLine.match(macPattern);
+                
+                if (match && trimmedLine.includes('(') && trimmedLine.includes(')')) {
+                    const parts = trimmedLine.split(/\s+/);
                     if (parts.length >= 4) {
                         routes.push({
-                            originator: parts[0],
+                            originator: match[1], // Use the MAC address from regex match
                             lastSeen: parts[1],
                             quality: parts[2],
                             nextHop: parts[3],

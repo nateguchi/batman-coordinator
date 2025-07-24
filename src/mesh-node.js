@@ -102,6 +102,10 @@ class MeshNode {
                 // Now try to setup ZeroTier through the mesh
                 try {
                     await this.zeroTierManager.initialize();
+                    
+                    // Configure ZeroTier routing for mesh node (via batman)
+                    await this.zeroTierManager.configureRoutingForMesh(false);
+                    
                     await this.waitForZeroTierConnection();
                     logger.info('ZeroTier connected through mesh');
                 } catch (error) {
@@ -374,6 +378,12 @@ class MeshNode {
                 const zeroTierStatus = await this.zeroTierManager.getStatus();
                 if (!zeroTierStatus.online) {
                     logger.debug('ZeroTier not online, attempting to reconnect through mesh...');
+                    
+                    // Debug routing state if needed
+                    if (process.env.LOG_LEVEL === 'debug') {
+                        await this.zeroTierManager.debugRoutingState();
+                    }
+                    
                     try {
                         await this.zeroTierManager.reconnect();
                     } catch (error) {
@@ -381,6 +391,8 @@ class MeshNode {
                         // Try to initialize ZeroTier if it's not running
                         try {
                             await this.zeroTierManager.initialize();
+                            // Configure routing after initialization
+                            await this.zeroTierManager.configureRoutingForMesh(false);
                         } catch (initError) {
                             logger.debug('ZeroTier initialization failed:', initError.message);
                         }
@@ -485,6 +497,13 @@ class MeshNode {
             // Stop services
             if (this.heartbeat) {
                 await this.heartbeat.stop();
+            }
+            
+            // Cleanup ZeroTier process-based routing
+            try {
+                await this.zeroTierManager.cleanupProcessBasedRouting();
+            } catch (error) {
+                logger.warn('Failed to cleanup ZeroTier routing:', error.message);
             }
             
             // Cleanup network configuration

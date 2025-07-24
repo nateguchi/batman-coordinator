@@ -196,6 +196,9 @@ class Coordinator {
         // Setup ZeroTier
         await this.zeroTierManager.initialize();
         
+        // Configure ZeroTier routing for coordinator (via ethernet)
+        await this.zeroTierManager.configureRoutingForMesh(true);
+        
         // Configure security rules
         await this.securityManager.setupFirewallRules();
         
@@ -377,6 +380,14 @@ class Coordinator {
             // Update known nodes
             for (const neighbor of batmanNeighbors) {
                 const nodeId = neighbor.address;
+                
+                // Validate MAC address format and skip invalid entries
+                const macPattern = /^([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})$/;
+                if (!macPattern.test(nodeId) || nodeId.includes('[') || nodeId.includes('B.A.T.M.A.N.')) {
+                    logger.debug(`Skipping invalid node address: ${nodeId}`);
+                    continue;
+                }
+                
                 if (!this.nodes.has(nodeId)) {
                     const node = {
                         id: nodeId,

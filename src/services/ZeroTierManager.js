@@ -199,6 +199,301 @@ class ZeroTierManager {
         }
     }
 
+    async configureRoutingForMesh(isCoordinator = false) {
+        try {
+            const networks = await this.getNetworks();
+            const targetNetwork = networks.find(n => n.id === this.networkId);
+            
+            if (!targetNetwork || !targetNetwork.interface) {
+                logger.warn('ZeroTier network not ready for routing configuration');
+                return;
+            }
+            
+            const ztInterface = targetNetwork.interface;
+            const batmanInterface = process.env.BATMAN_INTERFACE || 'bat0';
+            
+            if (isCoordinator) {
+                // Coordinator: Allow ZeroTier to use ethernet for internet access
+                logger.info('Coordinator: Allowing ZeroTier normal routing via ethernet');
+                // No special routing needed for coordinator - it has internet access
+                
+            } else {
+                // Node: Force all ZeroTier process traffic through batman mesh using process matching
+                logger.info(`Configuring node ZeroTier process routing via ${batmanInterface}`);
+                
+                await this.configureProcessBasedRouting(batmanInterface);
+            }
+            
+            logger.info('ZeroTier routing configured for mesh operation');
+            
+        } catch (error) {
+            logger.error('Failed to configure ZeroTier routing:', error);
+        }
+    }
+
+    async configureProcessBasedRouting(batmanInterface) {
+        try {
+            const coordinatorIP = process.env.COORDINATOR_BATMAN_IP || '192.168.100.1';
+            const markValue = '0x100'; // Custom mark for ZeroTier traffic
+            const tableId = '100'; // Custom routing table for ZeroTier
+            
+            logger.info('Setting up process-based routing for ZeroTier');
+            
+            // Step 1: Create custom routing table for ZeroTier traffic
+            await this.executeCommand(`ip rule del fwmark ${markValue} table ${tableId} 2>/dev/null || true`);
+            await this.executeCommand(`ip route flush table ${tableId} 2>/dev/null || true`);
+            
+            // Add rule to use custom table for marked packets
+            await this.executeCommand(`ip rule add fwmark ${markValue} table ${tableId}`);
+            
+            // Add default route in custom table via batman interface
+            await this.executeCommand(`ip route add default via ${coordinatorIP} dev ${batmanInterface} table ${tableId}`);
+            
+            // Step 2: Mark ZeroTier process traffic using iptables
+            // Remove existing ZeroTier marking rules
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --cmd-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m cgroup --cgroup 1 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            
+            // Add new marking rule for ZeroTier process
+            await this.executeCommand(`iptables -t mangle -A OUTPUT -m owner --cmd-owner zerotier-one -j MARK --set-mark ${markValue}`);
+            
+            // Step 3: Also mark by process name (backup method)
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner $(id -u zerotier-one 2>/dev/null || echo 999) -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            
+            // Try to mark by zerotier-one user if it exists
+            try {
+                const ztUser = await this.executeCommand('id -u zerotier-one 2>/dev/null || echo ""');
+                if (ztUser.trim()) {
+                    await this.executeCommand(`iptables -t mangle -A OUTPUT -m owner --uid-owner ${ztUser.trim()} -j MARK --set-mark ${markValue}`);
+                }
+            } catch (error) {
+                logger.debug('ZeroTier user not found, using process name only');
+            }
+            
+            // Step 4: Ensure batman interface can route the traffic
+            // Add route to ZeroTier network via batman
+            const networks = await this.getNetworks();
+            const targetNetwork = networks.find(n => n.id === this.networkId);
+            if (targetNetwork && targetNetwork.assignedAddresses.length > 0) {
+                const ztNetwork = this.extractNetworkFromIP(targetNetwork.assignedAddresses[0]);
+                await this.executeCommand(`ip route add ${ztNetwork} via ${coordinatorIP} dev ${batmanInterface} 2>/dev/null || true`);
+            }
+            
+            logger.info(`ZeroTier process traffic will be routed through ${batmanInterface} using mark ${markValue}`);
+            
+        } catch (error) {
+            logger.error('Failed to configure process-based routing:', error);
+            throw error;
+        }
+    }
+
+    extractNetworkFromIP(ipWithMask) {
+        // Convert IP like "10.147.20.123/24" to network "10.147.20.0/24"
+        if (ipWithMask.includes('/')) {
+            const [ip, mask] = ipWithMask.split('/');
+            const parts = ip.split('.');
+            // For /24 network, zero out last octet
+            if (mask === '24') {
+                return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+            }
+            // For /16 network, zero out last two octets  
+            else if (mask === '16') {
+                return `${parts[0]}.${parts[1]}.0.0/16`;
+            }
+        }
+        return ipWithMask; // Return as-is if can't parse
+    }
+
+    async cleanupProcessBasedRouting() {
+        try {
+            const markValue = '0x100';
+            const tableId = '100';
+            
+            logger.info('Cleaning up ZeroTier process-based routing');
+            
+            // Remove iptables marking rules
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --cmd-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m cgroup --cgroup 1 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            
+            // Try to remove by UID if zerotier user exists
+            try {
+                const ztUser = await this.executeCommand('id -u zerotier-one 2>/dev/null || echo ""');
+                if (ztUser.trim()) {
+                    await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner ${ztUser.trim()} -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+                }
+            } catch (error) {
+                // Ignore
+            }
+            
+            // Remove custom routing table and rule
+            await this.executeCommand(`ip rule del fwmark ${markValue} table ${tableId} 2>/dev/null || true`);
+            await this.executeCommand(`ip route flush table ${tableId} 2>/dev/null || true`);
+            
+            logger.info('ZeroTier process-based routing cleanup complete');
+            
+        } catch (error) {
+            logger.error('Failed to cleanup process-based routing:', error);
+        }
+    }
+
+    async verifyProcessBasedRouting() {
+        try {
+            const markValue = '0x100';
+            const tableId = '100';
+            
+            logger.debug('Verifying ZeroTier process-based routing configuration');
+            
+            // Check if iptables rule exists
+            const iptablesRules = await this.executeCommand('iptables -t mangle -L OUTPUT -n -v');
+            const hasMarkingRule = iptablesRules.includes('zerotier-one') && iptablesRules.includes(markValue);
+            
+            // Check if routing rule exists  
+            const ipRules = await this.executeCommand('ip rule show');
+            const hasRoutingRule = ipRules.includes(`fwmark ${markValue}`) && ipRules.includes(`lookup ${tableId}`);
+            
+            // Check if custom table has routes
+            let hasCustomRoutes = false;
+            try {
+                const tableRoutes = await this.executeCommand(`ip route show table ${tableId}`);
+                hasCustomRoutes = tableRoutes.includes('default');
+            } catch (error) {
+                // Table might not exist
+            }
+            
+            const status = {
+                hasMarkingRule,
+                hasRoutingRule, 
+                hasCustomRoutes,
+                isConfigured: hasMarkingRule && hasRoutingRule && hasCustomRoutes
+            };
+            
+            logger.debug('Process-based routing status:', status);
+            return status;
+            
+        } catch (error) {
+            logger.error('Failed to verify process-based routing:', error);
+            return { isConfigured: false, error: error.message };
+        }
+    }
+
+    async debugRoutingState() {
+        try {
+            logger.info('=== ZeroTier Routing Debug Information ===');
+            
+            // Show ZeroTier status
+            const status = await this.getStatus();
+            logger.info('ZeroTier Online:', status.online);
+            logger.info('ZeroTier Networks:', status.networks.length);
+            
+            // Show iptables mangle rules
+            try {
+                const iptables = await this.executeCommand('iptables -t mangle -L OUTPUT -n -v --line-numbers');
+                logger.info('Iptables mangle OUTPUT rules:\n' + iptables);
+            } catch (error) {
+                logger.warn('Could not get iptables rules:', error.message);
+            }
+            
+            // Show IP rules
+            try {
+                const ipRules = await this.executeCommand('ip rule show');
+                logger.info('IP routing rules:\n' + ipRules);
+            } catch (error) {
+                logger.warn('Could not get IP rules:', error.message);
+            }
+            
+            // Show custom table 100
+            try {
+                const table100 = await this.executeCommand('ip route show table 100');
+                logger.info('Custom routing table 100:\n' + table100);
+            } catch (error) {
+                logger.info('Custom table 100 is empty or does not exist');
+            }
+            
+            // Show main routing table
+            try {
+                const mainTable = await this.executeCommand('ip route show');
+                logger.info('Main routing table:\n' + mainTable);
+            } catch (error) {
+                logger.warn('Could not get main routing table:', error.message);
+            }
+            
+            // Verify process-based routing
+            const routingStatus = await this.verifyProcessBasedRouting();
+            logger.info('Process-based routing status:', routingStatus);
+            
+            logger.info('=== End Debug Information ===');
+            
+            return {
+                ztStatus: status,
+                routingStatus: routingStatus
+            };
+            
+        } catch (error) {
+            logger.error('Failed to generate debug information:', error);
+            return { error: error.message };
+        }
+    }
+
+    async testConnectivity() {
+        try {
+            logger.debug('Testing ZeroTier connectivity...');
+            
+            const networks = await this.getNetworks();
+            const targetNetwork = networks.find(n => n.id === this.networkId);
+            
+            if (!targetNetwork || targetNetwork.assignedAddresses.length === 0) {
+                logger.debug('ZeroTier network not ready for connectivity test');
+                return false;
+            }
+            
+            // Test connectivity to ZeroTier's infrastructure
+            // First try to ping ZeroTier network peers
+            const peers = await this.getPeers();
+            let peerConnectivity = false;
+            
+            for (const peer of peers) {
+                if (peer.role === 'PLANET' || peer.role === 'MOON') {
+                    try {
+                        // Extract IP from paths if available
+                        const path = peer.paths.find(p => p.includes('/'));
+                        if (path) {
+                            const ip = path.split('/')[0];
+                            const result = await this.executeCommand(`ping -c 1 -W 2 ${ip} 2>/dev/null || true`);
+                            if (result.includes('1 received')) {
+                                peerConnectivity = true;
+                                break;
+                            }
+                        }
+                    } catch (error) {
+                        continue;
+                    }
+                }
+            }
+            
+            // Test general internet connectivity (this should go through mesh on nodes)
+            let internetConnectivity = false;
+            try {
+                const result = await this.executeCommand(`ping -c 1 -W 3 8.8.8.8 2>/dev/null || true`);
+                internetConnectivity = result.includes('1 received');
+            } catch (error) {
+                // Internet test failed
+            }
+            
+            const connectivityStatus = {
+                peerConnectivity,
+                internetConnectivity,
+                overall: peerConnectivity || internetConnectivity
+            };
+            
+            logger.debug('ZeroTier connectivity test results:', connectivityStatus);
+            return connectivityStatus.overall;
+            
+        } catch (error) {
+            logger.debug('ZeroTier connectivity test error:', error.message);
+            return false;
+        }
+    }
+
     async getPeers() {
         try {
             const output = await this.executeCommand('zerotier-cli peers');
