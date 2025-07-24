@@ -298,8 +298,17 @@ ip rule show | grep 0x100
 # Enable debug logging
 LOG_LEVEL=debug npm run mesh-node
 
-# Manual routing verification
-sudo iptables -t mangle -A OUTPUT -m owner --cmd-owner zerotier-one -j MARK --set-mark 0x100
+# Manual routing verification (try different marking methods)
+# Method 1: UID-based (if zerotier-one user exists)
+sudo iptables -t mangle -A OUTPUT -m owner --uid-owner $(id -u zerotier-one) -j MARK --set-mark 0x100
+
+# Method 2: Port-based (fallback method)
+sudo iptables -t mangle -A OUTPUT -p udp --dport 9993 -j MARK --set-mark 0x100
+
+# Method 3: Interface-based (if ZeroTier interface identified)
+sudo iptables -t mangle -A OUTPUT -o zt+ -j MARK --set-mark 0x100
+
+# Setup routing table
 ip rule add fwmark 0x100 table 100
 ip route add default via 192.168.100.1 dev bat0 table 100
 ```
@@ -307,8 +316,10 @@ ip route add default via 192.168.100.1 dev bat0 table 100
 #### Common Issues
 - **ZeroTier shows "[B.A.T.M.A.N." as node name**: Fixed in batman-adv output parsing
 - **ZeroTier not connecting through mesh**: Check if process-based routing is configured
+- **"unknown option --cmd-owner" error**: Fixed by using UID/port-based marking instead
 - **Missing iptables rules**: Ensure script runs with root privileges
 - **Custom routing table empty**: Verify batman interface has valid gateway IP
+- **ZeroTier UID not found**: System falls back to port-based marking (UDP 9993)
 
 ### Batman-adv Issues
 ```bash

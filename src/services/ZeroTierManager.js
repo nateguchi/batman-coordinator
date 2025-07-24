@@ -251,23 +251,59 @@ class ZeroTierManager {
             
             // Step 2: Mark ZeroTier process traffic using iptables
             // Remove existing ZeroTier marking rules
-            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --cmd-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
             await this.executeCommand(`iptables -t mangle -D OUTPUT -m cgroup --cgroup 1 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
             
-            // Add new marking rule for ZeroTier process
-            await this.executeCommand(`iptables -t mangle -A OUTPUT -m owner --cmd-owner zerotier-one -j MARK --set-mark ${markValue}`);
-            
-            // Step 3: Also mark by process name (backup method)
-            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner $(id -u zerotier-one 2>/dev/null || echo 999) -j MARK --set-mark ${markValue} 2>/dev/null || true`);
-            
-            // Try to mark by zerotier-one user if it exists
+            // Get ZeroTier process UID
+            let ztUID = null;
             try {
                 const ztUser = await this.executeCommand('id -u zerotier-one 2>/dev/null || echo ""');
                 if (ztUser.trim()) {
-                    await this.executeCommand(`iptables -t mangle -A OUTPUT -m owner --uid-owner ${ztUser.trim()} -j MARK --set-mark ${markValue}`);
+                    ztUID = ztUser.trim();
+                    logger.debug(`Found ZeroTier UID: ${ztUID}`);
                 }
             } catch (error) {
-                logger.debug('ZeroTier user not found, using process name only');
+                logger.debug('ZeroTier user not found');
+            }
+            
+            // If no dedicated user, try to find the service PID and use a different approach
+            if (!ztUID) {
+                try {
+                    // Get ZeroTier service PID
+                    const pidOutput = await this.executeCommand('systemctl show --property MainPID zerotier-one');
+                    const pidMatch = pidOutput.match(/MainPID=(\d+)/);
+                    if (pidMatch && pidMatch[1] !== '0') {
+                        const pid = pidMatch[1];
+                        logger.debug(`Found ZeroTier PID: ${pid}`);
+                        
+                        // Use netfilter cgroup matching if available
+                        try {
+                            // Create a temporary cgroup for zerotier process
+                            await this.executeCommand('mkdir -p /sys/fs/cgroup/net_cls/zerotier 2>/dev/null || true');
+                            await this.executeCommand('echo 0x100001 > /sys/fs/cgroup/net_cls/zerotier/net_cls.classid 2>/dev/null || true');
+                            await this.executeCommand(`echo ${pid} > /sys/fs/cgroup/net_cls/zerotier/cgroup.procs 2>/dev/null || true`);
+                            
+                            // Mark traffic from this cgroup
+                            await this.executeCommand(`iptables -t mangle -A OUTPUT -m cgroup --cgroup 0x100001 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+                            logger.debug('Using cgroup-based traffic marking');
+                        } catch (cgroupError) {
+                            logger.debug('Cgroup marking failed, trying alternative approach');
+                            
+                            // Alternative: mark traffic to/from ZeroTier ports
+                            await this.markZeroTierPortTraffic(markValue);
+                        }
+                    } else {
+                        // ZeroTier not running or PID not found, try port-based marking
+                        await this.markZeroTierPortTraffic(markValue);
+                    }
+                } catch (error) {
+                    logger.debug('PID-based marking failed, using port-based marking');
+                    await this.markZeroTierPortTraffic(markValue);
+                }
+            } else {
+                // Use UID-based marking
+                await this.executeCommand(`iptables -t mangle -A OUTPUT -m owner --uid-owner ${ztUID} -j MARK --set-mark ${markValue}`);
+                logger.debug(`Using UID-based traffic marking for UID ${ztUID}`);
             }
             
             // Step 4: Ensure batman interface can route the traffic
@@ -304,6 +340,31 @@ class ZeroTierManager {
         return ipWithMask; // Return as-is if can't parse
     }
 
+    async markZeroTierPortTraffic(markValue) {
+        try {
+            logger.debug('Using port-based ZeroTier traffic marking');
+            
+            // ZeroTier uses UDP port 9993 for its protocol
+            // Mark outgoing traffic to ZeroTier ports
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -p udp --dport 9993 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t mangle -A OUTPUT -p udp --dport 9993 -j MARK --set-mark ${markValue}`);
+            
+            // Also mark traffic from ZeroTier interface if we can identify it
+            const ztInterface = await this.getZeroTierInterface();
+            if (ztInterface) {
+                await this.executeCommand(`iptables -t mangle -D OUTPUT -o ${ztInterface} -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+                await this.executeCommand(`iptables -t mangle -A OUTPUT -o ${ztInterface} -j MARK --set-mark ${markValue}`);
+                logger.debug(`Marking traffic from ZeroTier interface: ${ztInterface}`);
+            }
+            
+            logger.debug('Port-based ZeroTier traffic marking configured');
+            
+        } catch (error) {
+            logger.error('Failed to configure port-based traffic marking:', error);
+            throw error;
+        }
+    }
+
     async cleanupProcessBasedRouting() {
         try {
             const markValue = '0x100';
@@ -311,9 +372,10 @@ class ZeroTierManager {
             
             logger.info('Cleaning up ZeroTier process-based routing');
             
-            // Remove iptables marking rules
-            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --cmd-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
-            await this.executeCommand(`iptables -t mangle -D OUTPUT -m cgroup --cgroup 1 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            // Remove iptables marking rules - try all possible variations
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner zerotier-one -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -m cgroup --cgroup 0x100001 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            await this.executeCommand(`iptables -t mangle -D OUTPUT -p udp --dport 9993 -j MARK --set-mark ${markValue} 2>/dev/null || true`);
             
             // Try to remove by UID if zerotier user exists
             try {
@@ -321,6 +383,19 @@ class ZeroTierManager {
                 if (ztUser.trim()) {
                     await this.executeCommand(`iptables -t mangle -D OUTPUT -m owner --uid-owner ${ztUser.trim()} -j MARK --set-mark ${markValue} 2>/dev/null || true`);
                 }
+            } catch (error) {
+                // Ignore
+            }
+            
+            // Remove interface-based marking if it exists
+            const ztInterface = await this.getZeroTierInterface();
+            if (ztInterface) {
+                await this.executeCommand(`iptables -t mangle -D OUTPUT -o ${ztInterface} -j MARK --set-mark ${markValue} 2>/dev/null || true`);
+            }
+            
+            // Clean up cgroup if we created it
+            try {
+                await this.executeCommand('rmdir /sys/fs/cgroup/net_cls/zerotier 2>/dev/null || true');
             } catch (error) {
                 // Ignore
             }
@@ -343,9 +418,12 @@ class ZeroTierManager {
             
             logger.debug('Verifying ZeroTier process-based routing configuration');
             
-            // Check if iptables rule exists
+            // Check if iptables rule exists (any of the possible types)
             const iptablesRules = await this.executeCommand('iptables -t mangle -L OUTPUT -n -v');
-            const hasMarkingRule = iptablesRules.includes('zerotier-one') && iptablesRules.includes(markValue);
+            const hasMarkingRule = (iptablesRules.includes('zerotier-one') || 
+                                   iptablesRules.includes('9993') || 
+                                   iptablesRules.includes('cgroup')) && 
+                                   iptablesRules.includes(markValue);
             
             // Check if routing rule exists  
             const ipRules = await this.executeCommand('ip rule show');
@@ -360,10 +438,21 @@ class ZeroTierManager {
                 // Table might not exist
             }
             
+            // Determine marking method used
+            let markingMethod = 'none';
+            if (iptablesRules.includes('zerotier-one')) {
+                markingMethod = 'uid-based';
+            } else if (iptablesRules.includes('9993')) {
+                markingMethod = 'port-based';
+            } else if (iptablesRules.includes('cgroup')) {
+                markingMethod = 'cgroup-based';
+            }
+            
             const status = {
                 hasMarkingRule,
                 hasRoutingRule, 
                 hasCustomRoutes,
+                markingMethod,
                 isConfigured: hasMarkingRule && hasRoutingRule && hasCustomRoutes
             };
             

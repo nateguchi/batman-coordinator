@@ -23,8 +23,11 @@ async function testProcessRouting() {
         
         // Check iptables rules
         try {
-            const iptablesOutput = await ztManager.executeCommand('iptables -t mangle -L OUTPUT -n -v | grep -E "(zerotier|0x100)"');
+            const iptablesOutput = await ztManager.executeCommand('iptables -t mangle -L OUTPUT -n -v | grep -E "(zerotier|0x100|9993|cgroup)"');
             console.log('✓ Found iptables marking rules:', iptablesOutput ? 'Yes' : 'No');
+            if (iptablesOutput) {
+                console.log('  Rules found:', iptablesOutput.split('\n').length, 'lines');
+            }
         } catch (error) {
             console.log('✗ No iptables marking rules found');
         }
