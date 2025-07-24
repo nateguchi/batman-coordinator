@@ -277,8 +277,16 @@ table inet batman_nat {
 
     async getZeroTierInterface() {
         try {
-            const { stdout } = await execAsync('ip link show | grep zt | head -1 | cut -d: -f2 | tr -d " "');
-            return stdout.trim() || null;
+            // Look for actual ZeroTier interfaces, not veth pairs
+            const { stdout } = await execAsync('ip link show | grep -E "zt[a-z0-9]{10}" | head -1 | cut -d: -f2 | tr -d " "');
+            const ztInterface = stdout.trim();
+            
+            // If no real ZeroTier interface found, return null (chroot setup doesn't need host firewall rules)
+            if (!ztInterface || ztInterface.includes('veth')) {
+                return null;
+            }
+            
+            return ztInterface;
         } catch (error) {
             return null;
         }

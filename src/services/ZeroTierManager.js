@@ -166,8 +166,32 @@ class ZeroTierManager {
             }
             
             // Copy ZeroTier binaries from their actual locations
-            await this.executeCommand(`cp ${zerotierOnePath} ${chrootPath}/usr/bin/`);
-            await this.executeCommand(`cp ${zerotierCliPath} ${chrootPath}/usr/bin/`);
+            // First ensure no ZeroTier processes are running that might lock the files
+            try {
+                await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
+                await this.executeCommand('killall zerotier-one 2>/dev/null || true');
+                // Wait a moment for processes to fully stop
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } catch (error) {
+                logger.debug('Process killing before copy failed, continuing...');
+            }
+            
+            // Use cat instead of cp to avoid "text file busy" errors
+            try {
+                await this.executeCommand(`cat ${zerotierOnePath} > ${chrootPath}/usr/bin/zerotier-one`);
+                await this.executeCommand(`chmod 755 ${chrootPath}/usr/bin/zerotier-one`);
+            } catch (error) {
+                logger.warn('Failed to copy zerotier-one with cat, trying cp...');
+                await this.executeCommand(`cp ${zerotierOnePath} ${chrootPath}/usr/bin/`);
+            }
+            
+            try {
+                await this.executeCommand(`cat ${zerotierCliPath} > ${chrootPath}/usr/bin/zerotier-cli`);
+                await this.executeCommand(`chmod 755 ${chrootPath}/usr/bin/zerotier-cli`);
+            } catch (error) {
+                logger.warn('Failed to copy zerotier-cli with cat, trying cp...');
+                await this.executeCommand(`cp ${zerotierCliPath} ${chrootPath}/usr/bin/`);
+            }
             
             // Copy required libraries (handle both dynamic and static executables)
             try {
