@@ -113,9 +113,9 @@ class MeshNode {
                 try {
                     await this.zeroTierManager.initialize();
                     
-                    // Skip redundant DHCP configuration since we already did it above
-                    // Just setup ZeroTier-specific routing without re-doing DHCP
-                    logger.info('ZeroTier routing already configured via DHCP, verifying setup...');
+                    // Configure ZeroTier process-based routing to tunnel through batman mesh
+                    logger.info('Configuring ZeroTier tunnel traffic to route through batman mesh...');
+                    await this.zeroTierManager.configureProcessBasedRouting('bat0');
                     
                     await this.waitForZeroTierConnection();
                     logger.info('ZeroTier connected through mesh');
