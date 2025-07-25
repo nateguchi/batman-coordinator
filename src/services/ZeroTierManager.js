@@ -61,20 +61,25 @@ class ZeroTierManager {
         }
     }
 
-    async initialize(config) {
+    async initialize(config = {}) {
         this.config = config;
         
-        
-        logger.info(`Initializing ZeroTier with UID-based routing for network: ${this.networkId}`);
+        logger.info(`Initializing ZeroTier for ${config.isCoordinator ? 'coordinator' : 'mesh node'} with network: ${this.networkId}`);
         
         try {
             // Disable system ZeroTier service to prevent conflicts
             await this.disableSystemZeroTier();
             
-            // Configure using UID-based routing with subprocess
-            await this.configureUidBasedRouting();
+            // Configure based on role
+            if (config.isCoordinator) {
+                // Coordinator uses standard ZeroTier routing (all interfaces)
+                logger.info('Coordinator mode: ZeroTier will use all available interfaces');
+            } else {
+                // Mesh nodes use UID-based routing through batman mesh
+                await this.configureUidBasedRouting();
+            }
             
-            logger.info('✅ ZeroTier UID-based routing configured successfully');
+            logger.info('✅ ZeroTier configured successfully');
             
         } catch (error) {
             logger.error('Failed to initialize ZeroTier:', error);
@@ -281,6 +286,27 @@ class ZeroTierManager {
             
         } catch (error) {
             logger.error('Failed to create ZeroTier local configuration:', error);
+            throw error;
+        }
+    }
+
+    async configureCoordinatorRouting() {
+        try {
+            logger.info('Setting up standard ZeroTier routing for coordinator...');
+            
+            // 1. Ensure ZeroTier subprocess is running
+            await this.ensureZeroTierService();
+            
+            // 2. Join ZeroTier network if configured
+            if (this.networkId) {
+                await this.joinZeroTierNetwork();
+                await this.waitForZeroTierReady();
+            }
+            
+            logger.info('✅ Coordinator ZeroTier routing configured successfully - using all interfaces');
+            
+        } catch (error) {
+            logger.error('Failed to configure coordinator routing:', error);
             throw error;
         }
     }

@@ -201,10 +201,10 @@ class Coordinator {
         await this.dhcpManager.initialize();
         
         // Setup ZeroTier
-        await this.zeroTierManager.initialize();
+        await this.zeroTierManager.initialize({ isCoordinator: true });
         
-        // Configure ZeroTier routing for coordinator (via ethernet)
-        await this.zeroTierManager.configureRoutingForMesh(true);
+        // Configure ZeroTier routing for coordinator (standard routing - all interfaces)
+        await this.zeroTierManager.configureCoordinatorRouting();
         
         // Configure security rules
         await this.securityManager.setupFirewallRules();
