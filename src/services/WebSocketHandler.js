@@ -218,24 +218,26 @@ class WebSocketHandler {
             // Add registered nodes
             nodes.forEach(node => {
                 nodeMap.set(node.address, {
-                    id: node.id || node.address,
+                    id: node.address, // Use address as ID for consistency
                     address: node.address,
                     status: node.status,
                     lastSeen: node.lastSeen,
                     type: node.id === 'coordinator' ? 'coordinator' : 'node',
-                    source: 'registered'
+                    source: 'registered',
+                    name: node.name || node.id || node.address // Preserve original name/id as display name
                 });
             });
             
             // Add coordinator
             const coordinatorAddress = process.env.MASTER_IP || '192.168.100.1';
             nodeMap.set(coordinatorAddress, {
-                id: 'coordinator',
+                id: coordinatorAddress, // Use address as ID for consistency with links
                 address: coordinatorAddress,
                 status: 'online',
                 lastSeen: new Date(),
                 type: 'coordinator',
-                source: 'coordinator'
+                source: 'coordinator',
+                name: 'Coordinator' // Add a friendly name
             });
             
             // Add nodes discovered from batman routes/originators
@@ -349,9 +351,24 @@ class WebSocketHandler {
                     nodeCount: nodeMap.size,
                     linkCount: links.length,
                     directLinks: links.filter(l => l.type === 'direct').length,
-                    multiHopLinks: links.filter(l => l.type === 'multi-hop').length
+                    multiHopLinks: links.filter(l => l.type === 'multi-hop').length,
+                    coordinatorAddress: coordinatorAddress,
+                    registeredNodes: nodes.length,
+                    discoveredNodes: Array.from(nodeMap.values()).filter(n => n.source !== 'registered').length
                 }
             };
+
+            // Log topology for debugging
+            logger.debug('Generated topology:', {
+                nodeCount: topology.nodes.length,
+                linkCount: topology.links.length,
+                coordinatorAddress,
+                nodeIds: topology.nodes.map(n => n.id),
+                linkSources: topology.links.map(l => l.source),
+                linkTargets: topology.links.map(l => l.target)
+            });
+
+            console.log(topology);
 
             return topology;
 
