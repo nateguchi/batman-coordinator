@@ -582,6 +582,76 @@ class ZeroTierManager {
             // Don't throw on cleanup errors
         }
     }
+
+
+    async getPeers() {
+        try {
+            const output = await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} peers`);
+            logger.debug(`Raw ZeroTier peers output: ${output}`);
+            
+            const peers = [];
+            
+            const lines = output.split('\n');
+            for (const line of lines) {
+                if (line.length > 0 && line.startsWith('200 peers') && !line.includes('<ztaddr>')) {
+                    const parts = line.trim().split(/\s+/);
+                    if (parts.length >= 4) {
+                        peers.push({
+                            address: parts[2],           // ZeroTier address
+                            version: parts[3] || '',     // Version
+                            latency: parts[4] || '',     // Latency
+                            role: parts[5] || '',        // Role (LEAF, MOON, PLANET)
+                            paths: parts.slice(6) || []  // Available paths
+                        });
+                    }
+                }
+            }
+            
+            return peers;
+            
+        } catch (error) {
+            logger.error('Failed to get ZeroTier peers:', error);
+            return [];
+        }
+    }
+    
+    async getNetworks() {
+        // Alias for getZeroTierNetworks to maintain compatibility
+        return await this.getZeroTierNetworks();
+    }
+
+    async getZeroTierNetworks() {
+        try {
+            const output = await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} listnetworks`);
+            logger.debug(`Raw ZeroTier listnetworks output: ${output}`);
+            
+            const networks = [];
+            
+            const lines = output.split('\n');
+            for (const line of lines) {
+                if (line.length > 0 && line.startsWith('200 listnetworks') && !line.includes('<nwid>')) {
+                    const parts = line.trim().split(/\s+/);
+                    if (parts.length >= 7) {
+                        networks.push({
+                            id: parts[2],           // Network ID
+                            name: parts[3] || '',   // Network name
+                            mac: parts[4] || '',    // MAC address
+                            status: parts[5],       // Status (OK, etc.)
+                            type: parts[6],         // Type (PRIVATE/PUBLIC)
+                            interface: parts[7] || '', // Interface name (ztuga3ckpj)
+                            assignedAddresses: parts.slice(8) || [] // IP addresses
+                        });
+                    }
+                }
+            }
+            
+            return networks;
+            
+        } catch (error) {
+            logger.error('Failed to get ZeroTier networks:', error);
+            return [];
+        }
+    }
 }
 
 module.exports = ZeroTierManager;
