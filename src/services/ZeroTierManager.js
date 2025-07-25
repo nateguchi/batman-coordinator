@@ -11,10 +11,30 @@ class ZeroTierManager {
         this.authToken = process.env.ZEROTIER_AUTH_TOKEN;
         this.allowedSubnets = (process.env.ALLOWED_ZEROTIER_SUBNETS || '').split(',').filter(s => s.trim());
         this.zerotierInterface = null;
-        this.zerotierUid = 999; // zerotier-one user UID
+        this.zerotierUid = null; // Will be detected dynamically
         this.routingTable = 'batmanif';
         this.zerotierProcess = null;
         this.zerotierDataDir = '/var/lib/zerotier-one';
+    }
+
+    async getZeroTierUid() {
+        try {
+            if (this.zerotierUid !== null) {
+                return this.zerotierUid;
+            }
+            
+            // Get the UID of the zerotier-one user
+            const idOutput = await this.executeCommand('id -u zerotier-one');
+            this.zerotierUid = parseInt(idOutput.trim());
+            
+            logger.debug(`Detected ZeroTier UID: ${this.zerotierUid}`);
+            return this.zerotierUid;
+            
+        } catch (error) {
+            logger.warn('Failed to get zerotier-one UID, using default 999:', error.message);
+            this.zerotierUid = 999;
+            return this.zerotierUid;
+        }
     }
 
     async executeCommand(command, options = {}) {
@@ -230,19 +250,60 @@ class ZeroTierManager {
         }
     }
 
+    async createZeroTierLocalConfig(batmanInterface) {
+        try {
+            logger.debug('Creating ZeroTier local configuration...');
+            
+            // Get the batman interface IP
+            const interfaceInfo = await this.executeCommand(`ip addr show ${batmanInterface}`);
+            const ipMatch = interfaceInfo.match(/inet ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/);
+            
+            if (!ipMatch) {
+                throw new Error(`Could not find IP address for ${batmanInterface}`);
+            }
+            
+            const batmanIP = ipMatch[1];
+            logger.debug(`Found batman interface IP: ${batmanIP}`);
+            
+            // Create the local.conf configuration
+            const localConfig = {
+                settings: {
+                    allowSecondaryPort: false,
+                    portMappingEnabled: false,
+                    bind: [batmanIP],
+                    interfacePrefixBlacklist: ["eth", "enp", "wlan", "lo", "docker", "br-"]
+                }
+            };
+            
+            // Ensure the ZeroTier directory exists
+            await this.executeCommand('mkdir -p /var/lib/zerotier-one');
+            
+            // Write the configuration file
+            const configContent = JSON.stringify(localConfig, null, 2);
+            await this.executeCommand(`echo '${configContent}' > /var/lib/zerotier-one/local.conf`);
+            
+            logger.debug('✅ ZeroTier local configuration created successfully');
+            
+        } catch (error) {
+            logger.error('Failed to create ZeroTier local configuration:', error);
+            throw error;
+        }
+    }
+
     async configureUidBasedRouting(batmanInterface = 'bat0') {
         try {
             logger.info('Setting up UID-based ZeroTier routing...');
             
-    
+            // 1. Create ZeroTier local configuration to bind to batman interface
+            await this.createZeroTierLocalConfig(batmanInterface);
             
             // 2. Set up UID-based routing for zerotier-one process
             await this.setupUidRouting(batmanInterface);
 
-            // 1. Ensure ZeroTier subprocess is running
+            // 3. Ensure ZeroTier subprocess is running
             await this.ensureZeroTierService();
             
-            // 3. Join ZeroTier network if configured
+            // 4. Join ZeroTier network if configured
             if (this.networkId) {
                 await this.joinZeroTierNetwork();
                 await this.waitForZeroTierReady();
@@ -260,6 +321,9 @@ class ZeroTierManager {
         try {
             logger.debug('Setting up UID-based routing for ZeroTier...');
             
+            // Get the actual UID of the zerotier-one user
+            const zerotierUid = await this.getZeroTierUid();
+            
             // Get batman interface IP to use as gateway and source
             const routes = await this.executeCommand('ip route');
             const routesList = routes.split('\n');
@@ -273,7 +337,7 @@ class ZeroTierManager {
                 throw new Error(`Invalid batman gateway IP: ${batmanGatewayIP}`);
             }
             
-            logger.debug(`Using batman IP: ${batmanGatewayIP} for routing table ${this.routingTable}`);
+            logger.debug(`Using batman IP: ${batmanGatewayIP} for routing table ${this.routingTable}, UID: ${zerotierUid}`);
             
             // Add custom routing table entry to /etc/iproute2/rt_tables
             const tableEntry = `100 ${this.routingTable}`;
@@ -287,9 +351,9 @@ class ZeroTierManager {
                 await this.executeCommand(`echo "${tableEntry}" >> /etc/iproute2/rt_tables 2>/dev/null || true`);
             }
             
-            // Set up UID-based routing rule for zerotier-one process (UID 999)
-            await this.executeCommand(`ip rule del uidrange ${this.zerotierUid}-${this.zerotierUid} lookup ${this.routingTable} 2>/dev/null || true`);
-            await this.executeCommand(`ip rule add uidrange ${this.zerotierUid}-${this.zerotierUid} lookup ${this.routingTable}`);
+            // Set up UID-based routing rule for zerotier-one process
+            await this.executeCommand(`ip rule del uidrange ${zerotierUid}-${zerotierUid} lookup ${this.routingTable} 2>/dev/null || true`);
+            await this.executeCommand(`ip rule add uidrange ${zerotierUid}-${zerotierUid} lookup ${this.routingTable}`);
             
             // Flush and configure the routing table
             await this.executeCommand(`ip route flush table ${this.routingTable}`);
@@ -472,7 +536,8 @@ class ZeroTierManager {
             }
             
             // Clean up UID-based routing
-            await this.executeCommand(`ip rule del uidrange ${this.zerotierUid}-${this.zerotierUid} lookup ${this.routingTable} 2>/dev/null || true`);
+            const zerotierUid = await this.getZeroTierUid();
+            await this.executeCommand(`ip rule del uidrange ${zerotierUid}-${zerotierUid} lookup ${this.routingTable} 2>/dev/null || true`);
             await this.executeCommand(`ip route flush table ${this.routingTable} 2>/dev/null || true`);
             
             logger.info('✅ ZeroTier cleanup completed');
