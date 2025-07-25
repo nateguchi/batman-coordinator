@@ -92,12 +92,35 @@ class ZeroTierManager {
         try {
             logger.info('Starting ZeroTier as subprocess...');
             
+            // Check if zerotier-one binary exists
+            try {
+                await this.executeCommand('test -x /usr/sbin/zerotier-one');
+                logger.debug('ZeroTier binary found at /usr/sbin/zerotier-one');
+            } catch (error) {
+                // Try alternative path
+                try {
+                    await this.executeCommand('which zerotier-one');
+                    logger.debug('ZeroTier binary found via which command');
+                } catch (whichError) {
+                    throw new Error('zerotier-one binary not found. Please install ZeroTier first.');
+                }
+            }
+            
             // Ensure zerotier-one user exists
             try {
-                await this.executeCommand('id zerotier-one');
+                const userInfo = await this.executeCommand('id zerotier-one');
+                logger.debug(`ZeroTier user info: ${userInfo}`);
             } catch (error) {
                 logger.info('Creating zerotier-one user...');
                 await this.executeCommand('useradd -r -s /bin/false -d /var/lib/zerotier-one zerotier-one 2>/dev/null || true');
+                
+                // Verify user was created
+                try {
+                    await this.executeCommand('id zerotier-one');
+                    logger.debug('ZeroTier user created successfully');
+                } catch (verifyError) {
+                    throw new Error('Failed to create zerotier-one user');
+                }
             }
             
             // Ensure data directory exists and has correct permissions
@@ -105,26 +128,44 @@ class ZeroTierManager {
             await this.executeCommand(`chown zerotier-one:zerotier-one ${this.zerotierDataDir}`);
             await this.executeCommand(`chmod 700 ${this.zerotierDataDir}`);
             
+            // Verify directory permissions
+            const dirInfo = await this.executeCommand(`ls -la ${this.zerotierDataDir} | head -2`);
+            logger.debug(`ZeroTier data directory info: ${dirInfo}`);
+            
             // Start ZeroTier process as zerotier-one user
+            logger.debug('Spawning ZeroTier subprocess...');
             this.zerotierProcess = spawn('sudo', [
                 '-u', 'zerotier-one',
-                'zerotier-one',
+                '/usr/sbin/zerotier-one',  // Use full path
                 '-d', this.zerotierDataDir
             ], {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 detached: false
             });
             
+            let processOutput = '';
+            let processErrors = '';
+            
             this.zerotierProcess.stdout.on('data', (data) => {
-                logger.debug(`ZeroTier stdout: ${data.toString().trim()}`);
+                const output = data.toString().trim();
+                processOutput += output + '\n';
+                logger.debug(`ZeroTier stdout: ${output}`);
             });
             
             this.zerotierProcess.stderr.on('data', (data) => {
-                logger.debug(`ZeroTier stderr: ${data.toString().trim()}`);
+                const error = data.toString().trim();
+                processErrors += error + '\n';
+                logger.warn(`ZeroTier stderr: ${error}`);
             });
             
             this.zerotierProcess.on('exit', (code, signal) => {
-                logger.warn(`ZeroTier process exited with code ${code}, signal ${signal}`);
+                logger.error(`ZeroTier process exited with code ${code}, signal ${signal}`);
+                if (processOutput) {
+                    logger.error(`ZeroTier stdout before exit: ${processOutput}`);
+                }
+                if (processErrors) {
+                    logger.error(`ZeroTier stderr before exit: ${processErrors}`);
+                }
                 this.zerotierProcess = null;
             });
             
@@ -134,14 +175,29 @@ class ZeroTierManager {
             });
             
             // Wait for ZeroTier to start
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            await new Promise(resolve => setTimeout(resolve, 5000)); // Increased wait time
             
             // Verify process is running
             if (!this.zerotierProcess || this.zerotierProcess.killed) {
-                throw new Error('ZeroTier subprocess failed to start');
+                throw new Error(`ZeroTier subprocess failed to start. Exit code: ${this.zerotierProcess?.exitCode}, Errors: ${processErrors}`);
             }
             
-            logger.info('✅ ZeroTier subprocess started successfully');
+            // Test if ZeroTier is responding
+            try {
+                await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} info`);
+                logger.info('✅ ZeroTier subprocess started and responding');
+            } catch (error) {
+                logger.warn('ZeroTier subprocess started but not responding to CLI yet');
+                // Give it a bit more time
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+                try {
+                    await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} info`);
+                    logger.info('✅ ZeroTier subprocess now responding');
+                } catch (retryError) {
+                    throw new Error(`ZeroTier subprocess not responding: ${retryError.message}`);
+                }
+            }
             
         } catch (error) {
             logger.error('Failed to start ZeroTier subprocess:', error);
@@ -240,7 +296,7 @@ class ZeroTierManager {
             logger.info(`Joining ZeroTier network ${this.networkId}...`);
             
             // Use zerotier-cli with the data directory to connect to our subprocess
-            const joinResult = await this.executeCommand(`zerotier-cli -D${this.zerotierDataDir} join ${this.networkId}`);
+            const joinResult = await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} join ${this.networkId}`);
             logger.debug(`ZeroTier join result: ${joinResult}`);
             
         } catch (error) {
@@ -255,7 +311,7 @@ class ZeroTierManager {
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 // Check ZeroTier status using zerotier-cli with data directory
-                const infoOutput = await this.executeCommand(`zerotier-cli -D${this.zerotierDataDir} info`);
+                const infoOutput = await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} info`);
                 logger.debug(`ZeroTier info (attempt ${attempt}): ${infoOutput}`);
                 
                 const networks = await this.getZeroTierNetworks();
@@ -290,7 +346,7 @@ class ZeroTierManager {
 
     async getZeroTierNetworks() {
         try {
-            const output = await this.executeCommand(`zerotier-cli -D${this.zerotierDataDir} listnetworks`);
+            const output = await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} listnetworks`);
             logger.debug(`Raw ZeroTier listnetworks output: ${output}`);
             
             const networks = [];

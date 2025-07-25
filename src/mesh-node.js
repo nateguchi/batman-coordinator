@@ -121,14 +121,14 @@ class MeshNode {
                 // Now try to setup ZeroTier through the mesh
                 try {
                     await this.zeroTierManager.initialize(this.config);
-                    logger.info('✅ ZeroTier chroot isolation setup complete');
+                    logger.info('✅ ZeroTier UID-based routing setup complete');
                     
                     this.zerotierConnected = true;
                     
                     await this.waitForZeroTierConnection();
-                    logger.info('ZeroTier connected through mesh via chroot isolation');
+                    logger.info('ZeroTier connected through mesh via UID-based routing');
                 } catch (error) {
-                    logger.warn('ZeroTier chroot setup failed, continuing without it:', error.message);
+                    logger.warn('ZeroTier UID-based setup failed, continuing without it:', error.message);
                     // Continue without ZeroTier - mesh nodes can work without external connectivity
                 }
             } else {
@@ -580,7 +580,7 @@ class MeshNode {
                         // Try to initialize ZeroTier if it's not running
                         try {
                             await this.zeroTierManager.initialize(this.config);
-                            logger.info('✅ ZeroTier reconnected with chroot isolation');
+                            logger.info('✅ ZeroTier reconnected with UID-based routing');
                         } catch (initError) {
                             logger.debug('ZeroTier initialization failed:', initError.message);
                         }
@@ -706,12 +706,12 @@ class MeshNode {
                 await this.heartbeat.stop();
             }
             
-            // Cleanup ZeroTier chroot configuration
+            // Cleanup ZeroTier UID-based routing configuration
             try {
-                logger.info('Cleaning up ZeroTier chroot configuration...');
-                await this.zeroTierManager.cleanupChrootRouting();
+                logger.info('Cleaning up ZeroTier UID-based routing configuration...');
+                await this.zeroTierManager.cleanup();
             } catch (error) {
-                logger.warn('Failed to cleanup ZeroTier chroot:', error.message);
+                logger.warn('Failed to cleanup ZeroTier:', error.message);
             }
             
             // Cleanup network configuration
