@@ -132,11 +132,9 @@ class ZeroTierManager {
             const dirInfo = await this.executeCommand(`ls -la ${this.zerotierDataDir} | head -2`);
             logger.debug(`ZeroTier data directory info: ${dirInfo}`);
             
-            // Start ZeroTier process as zerotier-one user
+            // Start ZeroTier process as root (it will drop privileges automatically)
             logger.debug('Spawning ZeroTier subprocess...');
-            this.zerotierProcess = spawn('sudo', [
-                '-u', 'zerotier-one',
-                '/usr/sbin/zerotier-one',  // Use full path
+            this.zerotierProcess = spawn('/usr/sbin/zerotier-one', [
                 '-d', this.zerotierDataDir
             ], {
                 stdio: ['ignore', 'pipe', 'pipe'],
