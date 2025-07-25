@@ -212,44 +212,146 @@ class WebSocketHandler {
             const batmanStatus = await this.services.networkManager.getBatmanStatus();
             const nodes = Array.from(this.services.nodes.values());
             
-            // Create topology data structure
-            const topology = {
-                nodes: nodes.map(node => ({
-                    id: node.id,
+            // Create a map of all known nodes from batman routes and registered nodes
+            const nodeMap = new Map();
+            
+            // Add registered nodes
+            nodes.forEach(node => {
+                nodeMap.set(node.address, {
+                    id: node.id || node.address,
                     address: node.address,
                     status: node.status,
                     lastSeen: node.lastSeen,
-                    type: node.id === 'coordinator' ? 'coordinator' : 'node'
-                })),
-                links: [],
+                    type: node.id === 'coordinator' ? 'coordinator' : 'node',
+                    source: 'registered'
+                });
+            });
+            
+            // Add coordinator
+            const coordinatorAddress = process.env.MASTER_IP || '192.168.100.1';
+            nodeMap.set(coordinatorAddress, {
+                id: 'coordinator',
+                address: coordinatorAddress,
+                status: 'online',
+                lastSeen: new Date(),
+                type: 'coordinator',
+                source: 'coordinator'
+            });
+            
+            // Add nodes discovered from batman routes/originators
+            if (batmanStatus.routes) {
+                batmanStatus.routes.forEach(route => {
+                    // Add originator node if not already known
+                    if (!nodeMap.has(route.originator)) {
+                        nodeMap.set(route.originator, {
+                            id: route.originator,
+                            address: route.originator,
+                            status: 'discovered',
+                            lastSeen: route.lastSeen,
+                            type: 'mesh-node',
+                            source: 'batman-routes',
+                            quality: route.quality
+                        });
+                    }
+                    
+                    // Add next hop node if different from originator
+                    if (route.nextHop && route.nextHop !== route.originator && !nodeMap.has(route.nextHop)) {
+                        nodeMap.set(route.nextHop, {
+                            id: route.nextHop,
+                            address: route.nextHop,
+                            status: 'discovered',
+                            lastSeen: route.lastSeen,
+                            type: 'mesh-node',
+                            source: 'batman-nexthop',
+                            quality: route.quality
+                        });
+                    }
+                });
+            }
+            
+            // Add nodes from batman neighbors
+            if (batmanStatus.neighbors) {
+                batmanStatus.neighbors.forEach(neighbor => {
+                    if (!nodeMap.has(neighbor.address)) {
+                        nodeMap.set(neighbor.address, {
+                            id: neighbor.address,
+                            address: neighbor.address,
+                            status: 'online',
+                            lastSeen: neighbor.lastSeen,
+                            type: 'mesh-node',
+                            source: 'batman-neighbor'
+                        });
+                    }
+                });
+            }
+            
+            // Create links showing actual batman mesh topology
+            const links = [];
+            const linkMap = new Map(); // To avoid duplicate links
+            
+            // Add direct neighbor links (these are direct wireless connections)
+            if (batmanStatus.neighbors) {
+                batmanStatus.neighbors.forEach(neighbor => {
+                    const linkId = `${coordinatorAddress}-${neighbor.address}`;
+                    if (!linkMap.has(linkId)) {
+                        links.push({
+                            source: coordinatorAddress,
+                            target: neighbor.address,
+                            type: 'direct',
+                            quality: neighbor.quality || 'unknown',
+                            lastSeen: neighbor.lastSeen,
+                            interface: neighbor.interface,
+                            linkId: linkId
+                        });
+                        linkMap.set(linkId, true);
+                    }
+                });
+            }
+            
+            // Add multi-hop routing links from batman routes
+            if (batmanStatus.routes) {
+                batmanStatus.routes.forEach(route => {
+                    // Only add links where nextHop differs from originator (indicating multi-hop)
+                    if (route.nextHop && route.nextHop !== route.originator) {
+                        const linkId = `${route.nextHop}-${route.originator}`;
+                        const reverseLinkId = `${route.originator}-${route.nextHop}`;
+                        
+                        // Avoid duplicate links (check both directions)
+                        if (!linkMap.has(linkId) && !linkMap.has(reverseLinkId)) {
+                            links.push({
+                                source: route.nextHop,
+                                target: route.originator,
+                                type: 'multi-hop',
+                                quality: route.quality,
+                                lastSeen: route.lastSeen,
+                                interface: route.interface,
+                                isBestPath: route.isBestPath || false,
+                                linkId: linkId
+                            });
+                            linkMap.set(linkId, true);
+                        }
+                    }
+                });
+            }
+            
+            // Create topology data structure
+            const topology = {
+                nodes: Array.from(nodeMap.values()),
+                links: links,
                 batman: {
                     neighbors: batmanStatus.neighbors || [],
-                    routes: batmanStatus.routes || []
+                    routes: batmanStatus.routes || [],
+                    neighborCount: batmanStatus.neighborCount || 0,
+                    routeCount: batmanStatus.routeCount || 0
+                },
+                metadata: {
+                    generated: new Date(),
+                    nodeCount: nodeMap.size,
+                    linkCount: links.length,
+                    directLinks: links.filter(l => l.type === 'direct').length,
+                    multiHopLinks: links.filter(l => l.type === 'multi-hop').length
                 }
             };
-
-            // Add coordinator node if not already present
-            const hasCoordinator = topology.nodes.find(n => n.type === 'coordinator');
-            if (!hasCoordinator) {
-                topology.nodes.unshift({
-                    id: 'coordinator',
-                    address: process.env.MASTER_IP || '192.168.100.1',
-                    status: 'online',
-                    lastSeen: new Date(),
-                    type: 'coordinator'
-                });
-            }
-
-            // Create links from batman neighbors
-            for (const neighbor of batmanStatus.neighbors || []) {
-                topology.links.push({
-                    source: 'coordinator',
-                    target: neighbor.address,
-                    quality: neighbor.quality,
-                    lastSeen: neighbor.lastSeen,
-                    interface: neighbor.interface
-                });
-            }
 
             return topology;
 
@@ -258,7 +360,11 @@ class WebSocketHandler {
             return {
                 nodes: [],
                 links: [],
-                batman: { neighbors: [], routes: [] }
+                batman: { neighbors: [], routes: [] },
+                metadata: {
+                    generated: new Date(),
+                    error: error.message
+                }
             };
         }
     }
