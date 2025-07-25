@@ -652,6 +652,33 @@ class ZeroTierManager {
             return [];
         }
     }
+
+
+    async getNetworkTrafficStats() {
+        if (!this.zerotierInterface) {
+            return null;
+        }
+        
+        try {
+            const rxBytes = await this.executeCommand(`cat /sys/class/net/${this.zerotierInterface}/statistics/rx_bytes`);
+            const txBytes = await this.executeCommand(`cat /sys/class/net/${this.zerotierInterface}/statistics/tx_bytes`);
+            const rxPackets = await this.executeCommand(`cat /sys/class/net/${this.zerotierInterface}/statistics/rx_packets`);
+            const txPackets = await this.executeCommand(`cat /sys/class/net/${this.zerotierInterface}/statistics/tx_packets`);
+            
+            return {
+                interface: this.zerotierInterface,
+                rxBytes: parseInt(rxBytes) || 0,
+                txBytes: parseInt(txBytes) || 0,
+                rxPackets: parseInt(rxPackets) || 0,
+                txPackets: parseInt(txPackets) || 0,
+                timestamp: new Date()
+            };
+            
+        } catch (error) {
+            logger.error('Failed to get ZeroTier traffic stats:', error);
+            return null;
+        }
+    }
 }
 
 module.exports = ZeroTierManager;
