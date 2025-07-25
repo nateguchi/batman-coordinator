@@ -194,7 +194,7 @@ class NodeHeartbeat {
                 zeroTierManager.getStatus().catch(() => ({}))
             ]);
             
-            return {
+            const heartbeatData = {
                 nodeId: this.nodeId,
                 timestamp: new Date(),
                 status: 'online',
@@ -217,6 +217,9 @@ class NodeHeartbeat {
                     interfaces: networkStats
                 }
             };
+
+            console.log('Heartbeat data created:', heartbeatData);
+            return heartbeatData;
             
         } catch (error) {
             logger.error('Failed to create heartbeat data:', error);
