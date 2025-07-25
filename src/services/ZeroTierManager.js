@@ -366,7 +366,11 @@ class ZeroTierManager {
             await this.executeCommand(`ip rule add uidrange ${zerotierUid}-${zerotierUid} lookup ${this.routingTable}`);
             
             // Flush and configure the routing table
-            await this.executeCommand(`ip route flush table ${this.routingTable}`);
+            try{
+                await this.executeCommand(`ip route flush table ${this.routingTable}`);
+            } catch(e){
+                logger.warn('Failed to flush routing table, continuing anyway:', e.message);
+            }
             await this.executeCommand(`ip route add default via ${batmanGatewayIP} dev ${batmanInterface} src ${batmanIP} table ${this.routingTable}`);
             
             logger.debug('✅ UID-based routing setup complete - ZeroTier traffic will use batman interface');
