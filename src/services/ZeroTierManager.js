@@ -267,7 +267,7 @@ class ZeroTierManager {
             const routes = await this.executeCommand('ip route');
             const routesList = routes.split('\n');
             const correctRoute = routesList.find((x)=>x.includes(batmanIP));
-            console.log(routes, routesList, correctRoute);
+            console.log(routes, routesList, correctRoute, batmanIP);
             const [restOfMatch, correctGateway] = correctRoute.match(/default via ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/);
             console.log(correctGateway);
             const batmanGatewayIP = correctGateway;
