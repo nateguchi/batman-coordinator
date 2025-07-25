@@ -118,19 +118,19 @@ class MeshNode {
             if (canReachCoordinator) {
                 logger.info('Mesh connectivity established to coordinator');
                 
-                // Now try to setup ZeroTier through the mesh
-                try {
-                    await this.zeroTierManager.initialize(this.config);
-                    logger.info('✅ ZeroTier chroot isolation setup complete');
+                // // Now try to setup ZeroTier through the mesh
+                // try {
+                //     await this.zeroTierManager.initialize(this.config);
+                //     logger.info('✅ ZeroTier chroot isolation setup complete');
                     
-                    this.zerotierConnected = true;
+                //     this.zerotierConnected = true;
                     
-                    await this.waitForZeroTierConnection();
-                    logger.info('ZeroTier connected through mesh via chroot isolation');
-                } catch (error) {
-                    logger.warn('ZeroTier chroot setup failed, continuing without it:', error.message);
-                    // Continue without ZeroTier - mesh nodes can work without external connectivity
-                }
+                //     await this.waitForZeroTierConnection();
+                //     logger.info('ZeroTier connected through mesh via chroot isolation');
+                // } catch (error) {
+                //     logger.warn('ZeroTier chroot setup failed, continuing without it:', error.message);
+                //     // Continue without ZeroTier - mesh nodes can work without external connectivity
+                // }
             } else {
                 logger.warn('No mesh connectivity to coordinator yet, skipping ZeroTier for now');
                 // ZeroTier will be retried in the monitoring loop
