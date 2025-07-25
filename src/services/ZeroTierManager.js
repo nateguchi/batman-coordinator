@@ -234,11 +234,13 @@ class ZeroTierManager {
         try {
             logger.info('Setting up UID-based ZeroTier routing...');
             
-            // 1. Ensure ZeroTier subprocess is running
-            await this.ensureZeroTierService();
+    
             
             // 2. Set up UID-based routing for zerotier-one process
             await this.setupUidRouting(batmanInterface);
+
+            // 1. Ensure ZeroTier subprocess is running
+            await this.ensureZeroTierService();
             
             // 3. Join ZeroTier network if configured
             if (this.networkId) {
@@ -260,7 +262,13 @@ class ZeroTierManager {
             
             // Get batman interface IP to use as gateway and source
             const batmanIpWithMask = await this.executeCommand(`ip addr show ${batmanInterface} | grep 'inet ' | awk '{print $2}' | head -1`);
-            const batmanGatewayIP = batmanIpWithMask.split('/')[0];
+            const batmanIP = batmanIpWithMask.split('/')[0];
+            // Get gateway using ip route e.g. default via 192.168.100.1 dev bat0 proto dhcp src 192.168.100.57 metric 216 
+            const routes = await this.executeCommand('ip route');
+            const routesList = routes.split('\n');
+            const correctRoute = routesList.find((x)=>x.includes(batmanIP));
+            const [restOfMatch, correctGateway] = correctRoute.match(/default via ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/);
+            const batmanGatewayIP = correctGateway;
             
             // Validate IP address format
             if (!batmanGatewayIP || !batmanGatewayIP.match(/^\d+\.\d+\.\d+\.\d+$/)) {
@@ -270,7 +278,7 @@ class ZeroTierManager {
             logger.debug(`Using batman IP: ${batmanGatewayIP} for routing table ${this.routingTable}`);
             
             // Add custom routing table entry to /etc/iproute2/rt_tables
-            const tableEntry = `201 ${this.routingTable}`;
+            const tableEntry = `100 ${this.routingTable}`;
             try {
                 const rtTables = await this.executeCommand('cat /etc/iproute2/rt_tables');
                 if (!rtTables.includes(this.routingTable)) {
@@ -287,7 +295,7 @@ class ZeroTierManager {
             
             // Flush and configure the routing table
             await this.executeCommand(`ip route flush table ${this.routingTable}`);
-            await this.executeCommand(`ip route add default via ${batmanGatewayIP} dev ${batmanInterface} src ${batmanGatewayIP} table ${this.routingTable}`);
+            await this.executeCommand(`ip route add default via ${batmanGatewayIP} dev ${batmanInterface} src ${batmanIP} table ${this.routingTable}`);
             
             logger.debug('✅ UID-based routing setup complete - ZeroTier traffic will use batman interface');
             
