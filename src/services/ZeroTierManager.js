@@ -261,16 +261,12 @@ class ZeroTierManager {
             logger.debug('Setting up UID-based routing for ZeroTier...');
             
             // Get batman interface IP to use as gateway and source
-            const batmanIpWithMask = await this.executeCommand(`ip addr show ${batmanInterface} | grep 'inet ' | awk '{print $2}' | head -1`);
-            const batmanIP = batmanIpWithMask.split('/')[0];
-            // Get gateway using ip route e.g. default via 192.168.100.1 dev bat0 proto dhcp src 192.168.100.57 metric 216 
             const routes = await this.executeCommand('ip route');
             const routesList = routes.split('\n');
-            const correctRoute = routesList.find((x)=>x.includes(batmanIP));
-            console.log(routes, routesList, correctRoute, batmanIP);
-            const [restOfMatch, correctGateway] = correctRoute.match(/default via ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/);
-            console.log(correctGateway);
-            const batmanGatewayIP = correctGateway;
+            const correctRoute = routesList.find((x)=>x.includes(batmanInterface) && x.includes('via'));
+            console.log(routes, routesList, correctRoute);
+            const [restOfMatch, batmanGatewayIP, batmanIP] = correctRoute.match(/default via ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+).*?src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/);
+            console.log(batmanGatewayIP, batmanIP);
             
             // Validate IP address format
             if (!batmanGatewayIP || !batmanGatewayIP.match(/^\d+\.\d+\.\d+\.\d+$/)) {
