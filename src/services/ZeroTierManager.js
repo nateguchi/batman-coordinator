@@ -157,12 +157,17 @@ class ZeroTierManager {
             });
             
             this.zerotierProcess.on('exit', (code, signal) => {
-                logger.error(`ZeroTier process exited with code ${code}, signal ${signal}`);
-                if (processOutput) {
-                    logger.error(`ZeroTier stdout before exit: ${processOutput}`);
-                }
-                if (processErrors) {
-                    logger.error(`ZeroTier stderr before exit: ${processErrors}`);
+                // ZeroTier normally exits with code 0 after forking to run as zerotier-one user
+                if (code === 0) {
+                    logger.info('ZeroTier process exited normally after forking to zerotier-one user');
+                } else {
+                    logger.error(`ZeroTier process exited with code ${code}, signal ${signal}`);
+                    if (processOutput) {
+                        logger.error(`ZeroTier stdout before exit: ${processOutput}`);
+                    }
+                    if (processErrors) {
+                        logger.error(`ZeroTier stderr before exit: ${processErrors}`);
+                    }
                 }
                 this.zerotierProcess = null;
             });
@@ -172,28 +177,27 @@ class ZeroTierManager {
                 this.zerotierProcess = null;
             });
             
-            // Wait for ZeroTier to start
+            // Wait for ZeroTier to start and fork
             await new Promise(resolve => setTimeout(resolve, 5000)); // Increased wait time
             
-            // Verify process is running
-            if (!this.zerotierProcess || this.zerotierProcess.killed) {
-                throw new Error(`ZeroTier subprocess failed to start. Exit code: ${this.zerotierProcess?.exitCode}, Errors: ${processErrors}`);
-            }
+            // The original process will exit after forking, so we check if ZeroTier is responding
+            // rather than checking if our original subprocess is still running
+            logger.debug('Checking if ZeroTier daemon is responding after fork...');
             
             // Test if ZeroTier is responding
             try {
                 await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} info`);
-                logger.info('✅ ZeroTier subprocess started and responding');
+                logger.info('✅ ZeroTier daemon started and responding');
             } catch (error) {
-                logger.warn('ZeroTier subprocess started but not responding to CLI yet');
+                logger.warn('ZeroTier daemon not responding yet, giving it more time...');
                 // Give it a bit more time
                 await new Promise(resolve => setTimeout(resolve, 3000));
                 
                 try {
                     await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} info`);
-                    logger.info('✅ ZeroTier subprocess now responding');
+                    logger.info('✅ ZeroTier daemon now responding');
                 } catch (retryError) {
-                    throw new Error(`ZeroTier subprocess not responding: ${retryError.message}`);
+                    throw new Error(`ZeroTier daemon not responding: ${retryError.message}`);
                 }
             }
             
@@ -205,19 +209,23 @@ class ZeroTierManager {
 
     async ensureZeroTierService() {
         try {
-            logger.info('Ensuring ZeroTier subprocess is running...');
+            logger.info('Ensuring ZeroTier daemon is running...');
             
-            // Check if our subprocess is still running
-            if (this.zerotierProcess && !this.zerotierProcess.killed) {
-                logger.debug('ZeroTier subprocess is already running');
+            // Check if ZeroTier daemon is already running by testing CLI
+            try {
+                await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} info`);
+                logger.debug('ZeroTier daemon is already running');
                 return;
+            } catch (error) {
+                // Daemon not running, start it
+                logger.debug('ZeroTier daemon not responding, starting it...');
             }
             
             // Start ZeroTier as subprocess
             await this.startZeroTierSubprocess();
             
         } catch (error) {
-            logger.error('Failed to ensure ZeroTier subprocess:', error);
+            logger.error('Failed to ensure ZeroTier daemon:', error);
             throw error;
         }
     }
@@ -377,8 +385,10 @@ class ZeroTierManager {
     
     async getStatus() {
         try {
-            // Check if ZeroTier subprocess is running
-            if (!this.zerotierProcess || this.zerotierProcess.killed) {
+            // Check if ZeroTier daemon is running by testing CLI
+            try {
+                await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} info`);
+            } catch (error) {
                 return {
                     online: false,
                     networks: []
@@ -404,17 +414,21 @@ class ZeroTierManager {
         try {
             logger.info('Attempting to reconnect ZeroTier...');
             
-            // Check if subprocess is still running
-            if (this.zerotierProcess && !this.zerotierProcess.killed) {
-                logger.debug('ZeroTier subprocess still running, checking network status...');
+            // Check if daemon is still running
+            try {
+                await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} info`);
+                logger.debug('ZeroTier daemon still running, checking network status...');
                 const status = await this.getStatus();
                 if (status.online) {
                     logger.info('ZeroTier reconnection successful');
                     return;
                 }
+            } catch (error) {
+                // Daemon not running
+                logger.debug('ZeroTier daemon not responding');
             }
             
-            // If subprocess died or not connected, restart it
+            // If daemon died or not connected, restart it
             logger.info('Restarting ZeroTier setup...');
             await this.cleanup();
             await this.configureUidBasedRouting();
@@ -429,19 +443,25 @@ class ZeroTierManager {
         logger.info('Cleaning up ZeroTier...');
         
         try {
-            // Stop ZeroTier subprocess
-            if (this.zerotierProcess && !this.zerotierProcess.killed) {
-                logger.debug('Stopping ZeroTier subprocess...');
-                this.zerotierProcess.kill('SIGTERM');
+            // Stop ZeroTier daemon properly
+            try {
+                logger.debug('Stopping ZeroTier daemon...');
+                // First try to stop gracefully using zerotier-cli
+                await this.executeCommand(`/usr/sbin/zerotier-cli -D${this.zerotierDataDir} terminate 2>/dev/null || true`);
                 
                 // Wait a bit for graceful shutdown
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 
-                // Force kill if still running
-                if (!this.zerotierProcess.killed) {
-                    this.zerotierProcess.kill('SIGKILL');
-                }
+                // If still running, kill zerotier-one processes
+                await this.executeCommand('pkill -f zerotier-one 2>/dev/null || true');
                 
+                logger.debug('ZeroTier daemon stopped');
+            } catch (error) {
+                logger.debug('Error stopping ZeroTier daemon (may already be stopped):', error.message);
+            }
+            
+            // Clean up subprocess reference if it exists
+            if (this.zerotierProcess) {
                 this.zerotierProcess = null;
             }
             
