@@ -529,14 +529,14 @@ class NetworkManager {
                 const match = trimmedLine.match(originatorPattern);
                 
                 if (match) {
-                    const [, isBestPath, originator, lastSeen, quality, nextHop, interface] = match;
+                    const [, isBestPath, originator, lastSeen, quality, nextHop, intf] = match;
                     
                     routes.push({
                         originator: originator,
                         lastSeen: lastSeen,
                         quality: parseInt(quality),
                         nextHop: nextHop,
-                        interface: interface,
+                        "interface": intf,
                         isBestPath: isBestPath === '*'
                     });
                 }
