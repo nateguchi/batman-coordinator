@@ -334,6 +334,7 @@ class ZeroTierManager {
                 let _res;
                 [_res, batmanGatewayIP, batmanIP] = correctRoute.match(/default via ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+).*?src ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/);
             } catch(e){
+                let _res;
                 [_res, batmanGatewayIP] = correctRoute.match(/default via ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/);
                 // use the first IP from the batman interface
                 batmanIP = (await this.executeCommand(`ip addr show ${batmanInterface} | grep 'inet ' | awk '{print $2}' | head -1`)).split('/')[0];
