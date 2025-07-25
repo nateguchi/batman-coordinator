@@ -510,32 +510,35 @@ class NetworkManager {
             for (const line of lines) {
                 const trimmedLine = line.trim();
                 
-                // Skip empty lines, header lines, and lines containing B.A.T.M.A.N.
+                // Skip empty lines, header lines, and B.A.T.M.A.N. version info
                 if (!trimmedLine || 
                     trimmedLine.includes('B.A.T.M.A.N.') ||
                     trimmedLine.includes('Originator') ||
-                    trimmedLine.includes('---') ||
-                    trimmedLine.includes('IF') ||
-                    trimmedLine.startsWith('[') ||
+                    trimmedLine.includes('last-seen') ||
+                    trimmedLine.includes('MainIF/MAC') ||
                     trimmedLine.includes('No batman nodes')) {
                     continue;
                 }
                 
-                // Look for lines with MAC addresses (format: XX:XX:XX:XX:XX:XX)
-                const macPattern = /([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})/;
-                const match = trimmedLine.match(macPattern);
+                // Parse originator table format:
+                // Format: [*] <originator_mac> <last_seen> (<quality>/<max>) <nexthop_mac> [<interface>]
+                // Example: " * b8:27:eb:45:93:30    0.748s   (239) b8:27:eb:45:93:30 [     wlan0]"
                 
-                if (match && trimmedLine.includes('(') && trimmedLine.includes(')')) {
-                    const parts = trimmedLine.split(/\s+/);
-                    if (parts.length >= 4) {
-                        routes.push({
-                            originator: match[1], // Use the MAC address from regex match
-                            lastSeen: parts[1],
-                            quality: parts[2],
-                            nextHop: parts[3],
-                            interface: parts[4] || 'unknown'
-                        });
-                    }
+                // Match lines with originator entries
+                const originatorPattern = /^(\*?)\s*([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})\s+(\d+\.\d+s)\s+\(\s*(\d+)\)\s+([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})\s+\[\s*(\w+)\s*\]/;
+                const match = trimmedLine.match(originatorPattern);
+                
+                if (match) {
+                    const [, isBestPath, originator, lastSeen, quality, nextHop, interface] = match;
+                    
+                    routes.push({
+                        originator: originator,
+                        lastSeen: lastSeen,
+                        quality: parseInt(quality),
+                        nextHop: nextHop,
+                        interface: interface,
+                        isBestPath: isBestPath === '*'
+                    });
                 }
             }
             
