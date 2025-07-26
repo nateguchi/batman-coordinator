@@ -214,6 +214,8 @@ class NetworkManager {
         const alfredProcess = spawn('alfred', ['-i', this.batmanInterface]);
         const visProcess = spawn('batadv-vis', ['-i', this.batmanInterface, '-s']);
 
+        logger.info('Starting alfred and batman-vis...');
+
         alfredProcess.stdout.on('data', (data) => {
             logger.debug(`Alfred output: ${data}`);
         });
