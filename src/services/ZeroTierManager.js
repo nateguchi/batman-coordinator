@@ -74,6 +74,14 @@ class ZeroTierManager {
             if (config.isCoordinator) {
                 // Coordinator uses standard ZeroTier routing (all interfaces)
                 logger.info('Coordinator mode: ZeroTier will use all available interfaces');
+                // Still need to start ZeroTier daemon for network discovery and management
+                await this.ensureZeroTierService();
+                
+                // Join ZeroTier network if configured
+                if (this.networkId) {
+                    await this.joinZeroTierNetwork();
+                    await this.waitForZeroTierReady();
+                }
             } else {
                 // Mesh nodes use UID-based routing through batman mesh
                 await this.configureUidBasedRouting();
