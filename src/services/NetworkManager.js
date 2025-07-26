@@ -1,4 +1,4 @@
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const ping = require('ping');
 const logger = require('../utils/logger');
@@ -197,6 +197,10 @@ class NetworkManager {
             
             // Optimize batman-adv settings
             await this.optimizeBatmanSettings();
+
+            // Start alfred and batman-vis
+            await this.startAlfredAndVis();
+
             
             logger.info('Batman-adv initialized successfully');
             
@@ -204,6 +208,27 @@ class NetworkManager {
             logger.error('Failed to initialize batman-adv:', error);
             throw error;
         }
+    }
+
+    async startAlfredAndVis(){
+        const alfredProcess = spawn('alfred', ['-i', this.batmanInterface]);
+        const visProcess = spawn('batadv-vis', ['-i', this.batmanInterface, '-s']);
+
+        alfredProcess.stdout.on('data', (data) => {
+            logger.debug(`Alfred output: ${data}`);
+        });
+
+        visProcess.stdout.on('data', (data) => {
+            logger.debug(`Vis output: ${data}`);
+        });
+
+        alfredProcess.stderr.on('data', (data) => {
+            logger.error(`Alfred error: ${data}`);
+        });
+
+        visProcess.stderr.on('data', (data) => {
+            logger.error(`Vis error: ${data}`);
+        });
     }
 
     async optimizeBatmanSettings() {
